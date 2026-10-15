@@ -38,6 +38,7 @@ function blankProject(): ProjectConfig {
     ciFixMaxRounds: 2,
     mergeNudgeAfterMin: 30,
     messaging: { platform: "none", channelId: "", channelName: "", templates: { ...DEFAULT_TEMPLATES }, agentCommand: DEFAULT_AGENT_MESSAGE_COMMAND },
+    routines: [],
   };
 }
 

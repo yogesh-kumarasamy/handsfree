@@ -5,6 +5,7 @@ import {
   DEFAULT_SETMORE_ACCOUNT,
   DEFAULT_TEMPLATES,
   PR_STATUSES,
+  ROUTINE_PRESETS,
   DEFAULT_JIRA_COMMENT,
   DEFAULT_JIRA_SEARCH,
   type Config,
@@ -67,6 +68,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
               ciFixMaxRounds: 2,
               mergeNudgeAfterMin: 30,
               messaging: { platform: "setmore", channelId: "nN0pGzAWVcudEnhemVADfwCZi6iUlMiW", channelName: "ChatSupport Team Core", templates: { ...DEFAULT_TEMPLATES }, agentCommand: DEFAULT_AGENT_MESSAGE_COMMAND },
+              routines: [{ ...ROUTINE_PRESETS[0], id: "r1" }],
             },
             {
               id: "p2",
@@ -86,6 +88,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
               ciFixMaxRounds: 2,
               mergeNudgeAfterMin: 30,
               messaging: { platform: "none", channelId: "", channelName: "", templates: { ...DEFAULT_TEMPLATES }, agentCommand: DEFAULT_AGENT_MESSAGE_COMMAND },
+              routines: [],
             },
           ],
   };
@@ -119,7 +122,7 @@ const pr = (number: number, repo: string, over: Partial<PrInfo> = {}): PrInfo =>
 });
 
 function demoState(scenario: DemoOptions["scenario"]): EngineState {
-  if (scenario === "empty") return { tickets: {}, pollErrors: {}, prCheckErrors: {}, accounts: { setmore: { loggedIn: false } } };
+  if (scenario === "empty") return { tickets: {}, pollErrors: {}, prCheckErrors: {}, accounts: { setmore: { loggedIn: false } }, routines: {} };
   const list: Ticket[] = [
     t({
       key: "CSW-1421",
@@ -244,7 +247,21 @@ function demoState(scenario: DemoOptions["scenario"]): EngineState {
     pollErrors: {},
     prCheckErrors: {},
     accounts: { setmore: { loggedIn: true, user: "yogesh@anywhere.co" } },
+    routines: {
+      r1: {
+        nextRunAt: tomorrowAt(10),
+        last: { startedAt: ago(1400), endedAt: ago(1398), ok: true, output: "Open PRs: 3 — 1 awaiting review, 1 approved not merged, 1 draft\n…", posted: true },
+        lastOk: ago(1400),
+      },
+    },
   };
+}
+
+function tomorrowAt(hour: number) {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  d.setHours(hour, 0, 0, 0);
+  return d.toISOString();
 }
 
 const DEMO_LOG = `── HandsFree ▸ SET-982 ─────────────────────────────

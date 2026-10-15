@@ -10,6 +10,7 @@ import {
   type EngineState,
   type MessagingConfig,
   type ProjectConfig,
+  type RoutineConfig,
   type Settings,
 } from "./types";
 
@@ -98,6 +99,7 @@ export function normalizeProject(p: Partial<ProjectConfig>): ProjectConfig {
     ciFixMaxRounds: clamp(p.ciFixMaxRounds, 0, 5, 2),
     mergeNudgeAfterMin: clamp(p.mergeNudgeAfterMin, 5, 1440, 30),
     messaging: normalizeMessaging(p.messaging),
+    routines: (p.routines || []).map(normalizeRoutine),
   };
 }
 
@@ -138,6 +140,7 @@ export function migrateState(raw: Partial<EngineState> | undefined, cfg: Config)
     lastPrCheckAt: raw?.lastPrCheckAt,
     nextPrCheckAt: raw?.nextPrCheckAt,
     accounts: { setmore: raw?.accounts?.setmore || { loggedIn: false } },
+    routines: raw?.routines || {},
   };
 }
 
@@ -155,4 +158,17 @@ export function logFile(key: string) {
 
 export function cryptoId() {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+}
+
+export function normalizeRoutine(r: Partial<RoutineConfig>): RoutineConfig {
+  return {
+    id: r.id || cryptoId(),
+    name: r.name || "Routine",
+    enabled: r.enabled ?? true,
+    schedule: typeof r.schedule === "string" ? r.schedule : "0 10 * * 1-5",
+    prompt: typeof r.prompt === "string" ? r.prompt : "",
+    agentCommand: typeof r.agentCommand === "string" ? r.agentCommand : "",
+    postToChannel: r.postToChannel ?? true,
+    timeoutMin: clamp(r.timeoutMin, 1, 120, 15),
+  };
 }
