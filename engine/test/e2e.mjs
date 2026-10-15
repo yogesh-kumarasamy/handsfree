@@ -435,14 +435,14 @@ try {
 
   prJson(101, { state: "MERGED", isDraft: false, headRefOid: "ddd444", mergedAt: "2026-10-15T10:00:00Z" });
   await checkPrs();
+  // The status flips to merged before the Jira comment and the event land, so wait for the whole sequence.
   const mergedT = await waitFor(async () => {
     const t = await ticket("DEMO-1");
-    return t.status === "merged" && t;
+    return t.status === "merged" && /🔔 Merged/.test((await api("/api/tickets/DEMO-1/log")).log) && t;
   }, "DEMO-1 merged");
   assert.ok(!fs.existsSync(wt), "worktree removed after merge");
   assert.equal(mergedT.pr.mergedAt, "2026-10-15T10:00:00Z");
   assert.match(fs.readFileSync(path.join(root, "comments.log"), "utf8"), /DEMO-1 .*Merged.*pull\/101/, "merge commented on Jira");
-  assert.match((await api("/api/tickets/DEMO-1/log")).log, /🔔 Merged/);
 
   // failing chain → failed, then retry
   // DEMO-2 is forgotten and re-picked as fresh work: even though its old branch is still on the remote,

@@ -152,3 +152,66 @@ test("SetmoreAdapter: confirmationToken found in nested JSON text or prose; none
     await new Promise((r) => srv.close(r));
   }
 });
+
+test("SetmoreAdapter: a dotted/base64 confirmationToken in prose is captured whole; nested sent:true counts as sent", async () => {
+  const shapes = [
+    { content: [{ type: "text", text: "Preview ready. confirmationToken: eyJhbGc.eyJzdWIi.sig+/= — call again." }] },
+    { content: [{ type: "text", text: JSON.stringify({ result: { sent: true, messageId: "m-9" } }) }] },
+  ];
+  let shape = 0;
+  const sends = [];
+  const srv = http.createServer(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    const rpc = JSON.parse(body);
+    const ok = (result) => {
+      res.writeHead(200, { "content-type": "application/json", "mcp-session-id": "s" });
+      res.end(JSON.stringify({ jsonrpc: "2.0", id: rpc.id, result }));
+    };
+    if (rpc.method === "initialize") return ok({ protocolVersion: "2025-06-18", capabilities: {}, serverInfo: { name: "x", version: "0" } });
+    if (rpc.method === "notifications/initialized") {
+      res.writeHead(202);
+      return res.end();
+    }
+    const a = rpc.params.arguments;
+    sends.push(a);
+    if (a.confirmationToken) return ok({ content: [{ type: "text", text: JSON.stringify({ sent: true, id: "m-1" }) }] });
+    return ok(shapes[shape]);
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  try {
+    const tokens = store();
+    tokens.save({ accessToken: "t", expiresAt: future });
+    const a = new SetmoreAdapter({ clientId: "cid", redirectPort: 1, mcpUrl: `http://127.0.0.1:${srv.address().port}/mcp`, issuer: "http://127.0.0.1:1/o", scopes: "" }, tokens, () => {});
+    shape = 0;
+    assert.equal((await a.send("c", "x", "k")).id, "m-1");
+    assert.equal(sends[sends.length - 1].confirmationToken, "eyJhbGc.eyJzdWIi.sig+/=");
+    shape = 1;
+    const before = sends.length;
+    assert.equal((await a.send("c", "x", "k")).id, "m-9");
+    assert.equal(sends.length, before + 1, "nested sent:true needs no second call");
+  } finally {
+    await new Promise((r) => srv.close(r));
+  }
+});
+
+test("SetmoreAdapter: a refresh that loses the race (rotated token → invalid_grant) does not clear the newer tokens", async () => {
+  const validTokens = new Set();
+  const [auth, mcp] = [await startFakeAuth({ validTokens }), await startFakeMcp({ validTokens })];
+  try {
+    const tokens = store();
+    tokens.save({ ...(await seedTokens(auth)), expiresAt: past });
+    const statuses = [];
+    // Two adapters on one token file (what settingsChanged() or a re-login produces mid-refresh).
+    const a = new SetmoreAdapter(settings(auth, mcp), tokens, (s) => statuses.push(s));
+    const b = new SetmoreAdapter(settings(auth, mcp), tokens, (s) => statuses.push(s));
+    const [ra, rb] = await Promise.all([a.refresh().then(() => "ok", (e) => e), b.refresh().then(() => "ok", (e) => e)]);
+    assert.ok(ra === "ok" || rb === "ok", "one refresh wins");
+    assert.ok(tokens.load(), "the winner's tokens survive the loser's invalid_grant");
+    assert.equal(statuses[statuses.length - 1].loggedIn, true);
+    assert.notEqual((await a.send("ch-core", "after race", "k")).id, undefined);
+  } finally {
+    await auth.close();
+    await mcp.close();
+  }
+});

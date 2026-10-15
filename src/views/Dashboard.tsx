@@ -79,10 +79,15 @@ export function Dashboard({
     const p = projects[tickets[0].projectId];
     const vars = (t: Ticket) => ({ key: t.key, summary: t.summary, pr_url: t.prUrl || "", pr_number: String(t.pr?.number ?? ""), project: projects[t.projectId]?.name || "", branch: t.branch, approved_ago: "" });
     const fillT = (tpl: string, v: Record<string, string>) => tpl.replace(/\{(\w+)\}/g, (m, k: string) => (k in v ? v[k] : m));
+    const projectIds = new Set(tickets.map((t) => t.projectId));
+    // One project: show the finished text. Several projects (several channels): keep {list} so the engine
+    // fills each channel with only its own PRs.
     const text =
       keys.length === 1
         ? fillT(p?.messaging.templates.manual || "{key}: {pr_url}", vars(tickets[0]))
-        : fillT(p?.messaging.templates.bulk || "{list}", { ...vars(tickets[0]), list: tickets.map((t) => `- ${t.key} — ${t.summary}: ${t.prUrl || "(no PR yet)"}`).join("\n") });
+        : projectIds.size === 1
+          ? fillT(p?.messaging.templates.bulk || "{list}", { ...vars(tickets[0]), list: tickets.map((t) => `- ${t.key} — ${t.summary}: ${t.prUrl || "(no PR yet)"}`).join("\n") })
+          : fillT(p?.messaging.templates.bulk || "{list}", { ...vars(tickets[0]), project: "" });
     setCompose({ keys, text });
   };
   const sendCompose = async () => {
@@ -323,7 +328,11 @@ export function Dashboard({
         <div className="modal-backdrop" onClick={() => !compose.sending && setCompose(undefined)}>
           <div className="modal card card-pad" onClick={stop}>
             <h3 className="card-title">Send to collab</h3>
-            <p className="card-sub">{compose.keys.join(", ")} → {projects[state.tickets[compose.keys[0]]?.projectId]?.messaging.channelName || "the project's channel"}</p>
+            <p className="card-sub">
+              {compose.keys.join(", ")} →{" "}
+              {[...new Set(compose.keys.map((k) => state.tickets[k]?.projectId))].map((pid) => projects[pid!]?.messaging.channelName || projects[pid!]?.name || "the project's channel").join(", ")}
+              {new Set(compose.keys.map((k) => state.tickets[k]?.projectId)).size > 1 && " · several projects: keep {list} in the text, each channel gets only its own PRs"}
+            </p>
             <textarea className="textarea" rows={6} value={compose.text} onChange={(e) => setCompose({ ...compose, text: e.target.value })} />
             {compose.result && <div className="callout err" style={{ marginTop: 10 }}><span className="t">{compose.result}</span></div>}
             <div className="row" style={{ marginTop: 12, justifyContent: "flex-end" }}>

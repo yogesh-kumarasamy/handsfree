@@ -95,3 +95,47 @@ test("onPrEvent: review_ready and merge_nudge send their templates; other kinds 
   assert.equal(sent.length, 2);
   assert.ok(logs.some(([k, s]) => k === "A-2" && /template is empty/.test(s)));
 });
+
+test("sendBulk with text across projects: {list} must stay in the text so each project gets its own list; fully expanded text is refused", async () => {
+  const sent = [];
+  const { svc } = makeService(sent);
+  const bad = await svc.sendBulk(["A-1", "B-1"], "Here: - A-1 and B-1 already expanded");
+  assert.equal(sent.length, 0);
+  assert.equal(bad.failed.length, 2);
+  assert.match(bad.failed[0].error, /spans .*projects/i);
+  const good = await svc.sendBulk(["A-1", "A-2", "B-1"], "Custom intro:\n{list}");
+  assert.equal(good.failed.length, 0);
+  assert.equal(sent.length, 2);
+  assert.match(sent[0].text, /^Custom intro:\n- A-1 — S A-1: https:\/\/x\/A-1\n- A-2/);
+  assert.doesNotMatch(sent[0].text, /B-1/);
+  assert.match(sent[1].text, /^Custom intro:\n- B-1/);
+});
+
+test("login callback: a duplicate callback during the code exchange is not exchanged twice and does not clobber the success", async () => {
+  const { startFakeAuth } = await import("./fakes/auth-server.mjs");
+  const auth = await startFakeAuth();
+  try {
+    const port = 49600 + Math.floor(Math.random() * 300);
+    const config = { settings: { accounts: { setmore: { clientId: "cid", redirectPort: port, mcpUrl: "http://127.0.0.1:1/mcp", issuer: auth.issuer, scopes: "openid" } } }, projects: [] };
+    const state = { tickets: {}, accounts: { setmore: { loggedIn: false } } };
+    // Slow down the token endpoint so two callbacks overlap.
+    const slowFetch = async (url, init) => {
+      if (String(url).includes("/token")) await new Promise((r) => setTimeout(r, 300));
+      return fetch(url, init);
+    };
+    const svc = new MessagingService({ config: () => config, state: () => state, log: () => {}, notify: () => {}, persist: () => {}, emit: () => {}, tokens: new TokenStore(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "hf-cb-")), "t.json")), fetchImpl: slowFetch });
+    const url = await svc.loginUrl();
+    const callback = (await fetch(url, { redirect: "manual" })).headers.get("location");
+    const [r1, r2] = await Promise.all([fetch(callback), fetch(callback)]);
+    assert.deepEqual([r1.status, r2.status].sort(), [200, 200]);
+    const bodies = [await r1.text(), await r2.text()];
+    assert.ok(bodies.some((b) => /Signed in/.test(b)));
+    assert.equal(auth.tokenCalls.length, 1, "the code is exchanged once");
+    const final = svc.status();
+    assert.equal(final.loggedIn, true);
+    assert.equal(final.error, undefined);
+    assert.equal(final.loginPending, false);
+  } finally {
+    await auth.close();
+  }
+});

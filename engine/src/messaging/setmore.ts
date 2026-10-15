@@ -16,6 +16,14 @@ export function findKey(v: unknown, keys: string[]): string | undefined {
   return undefined;
 }
 
+/** True when `key: true` appears anywhere in a JSON value. */
+export function findFlag(v: unknown, key: string): boolean {
+  if (!v || typeof v !== "object") return false;
+  const o = v as Record<string, unknown>;
+  if (o[key] === true) return true;
+  return Object.values(o).some((val) => findFlag(val, key));
+}
+
 export class SetmoreAdapter implements MessagingAdapter {
   readonly platform = "setmore" as const;
   private client: McpClient;
@@ -73,6 +81,13 @@ export class SetmoreAdapter implements MessagingAdapter {
       this.onStatus(this.status());
     } catch (e) {
       if (e instanceof OAuthError && e.code === "invalid_grant") {
+        // Another refresh (a re-login, or an adapter rebuilt by settingsChanged) may have rotated the token
+        // meanwhile: then ours was simply consumed, and the newer tokens on disk are the good ones.
+        const current = this.tokens.load();
+        if (current && current.refreshToken !== t.refreshToken) {
+          this.onStatus(this.status());
+          return;
+        }
         this.tokens.clear();
         this.onStatus(this.status("Setmore session expired — log in again."));
         throw new AuthError("Setmore session expired — log in again.");
@@ -93,8 +108,8 @@ export class SetmoreAdapter implements MessagingAdapter {
     const args = { conversationType: "channel", conversationId: channelId, text, idempotencyKey };
     const first = await this.client.callTool("send_message", args);
     const j1 = toolJson(first);
-    if (j1 && (j1.sent === true || j1.status === "sent")) return { id: findKey(j1, ["messageId", "id"]) };
-    const token = findKey(j1, ["confirmationToken"]) ?? /confirmationToken["']?\s*[:=]\s*["']?([\w-]+)/.exec(toolText(first))?.[1];
+    if (findFlag(j1, "sent") || findKey(j1, ["status"]) === "sent") return { id: findKey(j1, ["messageId", "id"]) };
+    const token = findKey(j1, ["confirmationToken"]) ?? /confirmationToken["']?\s*[:=]\s*["']?([^\s"',}]+)/.exec(toolText(first))?.[1];
     if (!token) throw new McpError(`send_message returned no confirmationToken: ${toolText(first).slice(0, 200) || "(empty response)"}`);
     const second = await this.client.callTool("send_message", { ...args, confirmationToken: token });
     const j2 = toolJson(second);

@@ -12,13 +12,14 @@ export interface AdapterDeps {
   fetchImpl?: typeof fetch;
 }
 
-export function adapterFor(p: Pick<ProjectConfig, "messaging" | "repoPath">, settings: Settings, deps: AdapterDeps): MessagingAdapter | undefined {
+export function adapterFor(p: Pick<ProjectConfig, "messaging">, settings: Settings, deps: AdapterDeps): MessagingAdapter | undefined {
   switch (p.messaging.platform) {
     case "setmore":
       deps.setmore ||= new SetmoreAdapter(settings.accounts.setmore, deps.tokens, deps.onStatus, deps.fetchImpl);
       return deps.setmore;
     case "agent":
-      return new AgentAdapter(p.messaging.agentCommand, p.repoPath || undefined);
+      // Deliberately not the project repo: its CLAUDE.md, hooks and .mcp.json must not shape a message send.
+      return new AgentAdapter(p.messaging.agentCommand);
     default:
       return undefined;
   }

@@ -25,15 +25,21 @@ const LOGIN_TIMEOUT_MS = 5 * 60_000;
 
 export class MessagingService {
   private adapterDeps: AdapterDeps;
-  private pending?: { url: string; server: http.Server; state: string; verifier: string; redirectUri: string; timer: NodeJS.Timeout };
+  private pending?: { url: string; server: http.Server; state: string; verifier: string; redirectUri: string; timer: NodeJS.Timeout; exchanging?: boolean };
 
   constructor(public deps: ServiceDeps) {
     this.adapterDeps = { tokens: deps.tokens, fetchImpl: deps.fetchImpl, onStatus: (s) => this.setStatus(s) };
   }
 
   // ---------- status ----------
+  private accountKey() {
+    return JSON.stringify(this.deps.config().settings.accounts.setmore);
+  }
   private setmore(): SetmoreAdapter {
-    this.adapterDeps.setmore ||= new SetmoreAdapter(this.deps.config().settings.accounts.setmore, this.deps.tokens, this.adapterDeps.onStatus, this.deps.fetchImpl);
+    if (!this.adapterDeps.setmore) {
+      this.adapterDeps.setmore = new SetmoreAdapter(this.deps.config().settings.accounts.setmore, this.deps.tokens, this.adapterDeps.onStatus, this.deps.fetchImpl);
+      this.lastAccountKey = this.accountKey();
+    }
     return this.adapterDeps.setmore;
   }
   status(): AccountStatus {
@@ -49,9 +55,13 @@ export class MessagingService {
   init() {
     this.setStatus(this.setmore().status());
   }
-  /** Settings changed (client id, URLs): drop the cached adapter so the next call uses them. */
+  private lastAccountKey?: string;
+  /**
+   * Config saved. Only when the account settings (client id, URLs) differ from the ones the cached adapter was
+   * built with is it dropped — an unrelated save must not interrupt an in-flight token refresh.
+   */
   settingsChanged() {
-    this.adapterDeps.setmore = undefined;
+    if (this.adapterDeps.setmore && this.accountKey() !== this.lastAccountKey) this.adapterDeps.setmore = undefined;
   }
 
   // ---------- resolving ----------
@@ -127,6 +137,13 @@ export class MessagingService {
       }
       if (!groups.has(t.projectId)) groups.set(t.projectId, []);
       groups.get(t.projectId)!.push(t);
+    }
+    // Each project has its own channel: a selection spanning projects must keep {list} so every channel
+    // only sees its own PRs. A fully expanded text would post everyone's PRs everywhere.
+    if (groups.size > 1 && text?.trim() && !text.includes("{list}")) {
+      const error = `This selection spans ${groups.size} projects (different channels). Keep {list} in the text so each channel gets only its own PRs.`;
+      for (const tickets of groups.values()) for (const t of tickets) failed.push({ key: t.key, error });
+      return { sent, failed };
     }
     for (const [projectId, tickets] of groups) {
       const p = this.deps.config().projects.find((x) => x.id === projectId);
@@ -221,6 +238,9 @@ export class MessagingService {
     }
     const code = url.searchParams.get("code");
     if (!code) return page(400, "Sign-in rejected", "No code in the callback.");
+    // The browser may retry or prefetch the callback: the code is one-time, so only the first request exchanges it.
+    if (p.exchanging) return page(200, "Signed in to Setmore", "This sign-in is already being completed. You can close this tab.");
+    p.exchanging = true;
     try {
       const s = this.deps.config().settings.accounts.setmore;
       const r = await exchangeCode(meta, { clientId: s.clientId, code, redirectUri: p.redirectUri, verifier: p.verifier, resource: s.mcpUrl }, this.deps.fetchImpl);
