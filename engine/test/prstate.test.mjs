@@ -131,8 +131,16 @@ test("trimFailedLogs: keeps the last N lines per run and caps the total", () => 
   assert.ok(huge.length <= 20_100, `total capped, got ${huge.length}`);
 });
 
+test("buildFixPrompt: a commit pattern replaces the classic rule with the regex and a rendered example", () => {
+  const p = { baseBranch: "main", promptExtra: "", naming: { commit: { template: "{type_cc}: {key} {summary}", pattern: "^(feat|fix): [A-Z]+-\\d+ " } } };
+  const t = { key: "DEMO-1", summary: "Add greeting", type: "bug", branch: "DEMO-1/bug/add-greeting", baseRef: "origin/main", prUrl: "u", attempts: [] };
+  const s = buildFixPrompt(p, t, { round: 1, headSha: "a", failedChecks: [{ name: "unit" }], logs: "", requestedAt: "" });
+  assert.match(s, /MUST match this regex: \/\^\(feat\|fix\): \[A-Z\]\+-\\d\+ \/ — for example "fix: DEMO-1 what this commit changes"/);
+  assert.doesNotMatch(s, /fix CI —/);
+});
+
 test("buildFixPrompt: names the PR, the checks, the round, includes the logs and the commit rule", () => {
-  const p = { baseBranch: "main", promptExtra: "Use pnpm." };
+  const p = { baseBranch: "main", promptExtra: "Use pnpm.", naming: { commit: { template: "{key}: {summary}", pattern: "" } } };
   const t = { key: "DEMO-1", summary: "Add greeting", branch: "handsfree/DEMO-1", baseRef: "origin/main", prUrl: "https://github.com/acme/repo/pull/7", description: "Say hi", attempts: [] };
   const fix = { round: 2, headSha: "abcdef0123", failedChecks: [{ name: "unit" }, { name: "lint" }], logs: "FAIL greeting.test.js", requestedAt: "" };
   const s = buildFixPrompt(p, t, fix);

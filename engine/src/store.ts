@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { DEFAULT_NAMING, type NamingConfig, type NamingRule } from "./naming";
 import {
   CLAUDE_COMMAND,
   CLAUDE_RESUME,
@@ -135,6 +136,7 @@ export function normalizeProject(p: Partial<ProjectConfig> & LegacyJiraFields): 
       sessionIdPattern: a.sessionIdPattern || "",
     })),
     promptExtra: p.promptExtra || "",
+    naming: normalizeNaming(p.naming),
     draftPr: p.draftPr ?? true,
     ciAutoFix: p.ciAutoFix ?? true,
     ciFixMaxRounds: clamp(p.ciFixMaxRounds, 0, 5, 2),
@@ -142,6 +144,15 @@ export function normalizeProject(p: Partial<ProjectConfig> & LegacyJiraFields): 
     messaging: normalizeMessaging(p.messaging),
     routines: (p.routines || []).map(normalizeRoutine),
   };
+}
+
+/** Missing or blank templates fall back to HandsFree's classic names; patterns default to "no check". */
+export function normalizeNaming(n: Partial<Record<keyof NamingConfig, Partial<NamingRule>>> | undefined): NamingConfig {
+  const rule = (k: keyof NamingConfig): NamingRule => ({
+    template: (n?.[k]?.template ?? "").trim() || DEFAULT_NAMING[k].template,
+    pattern: (n?.[k]?.pattern ?? "").trim(),
+  });
+  return { branch: rule("branch"), commit: rule("commit"), prTitle: rule("prTitle") };
 }
 
 function clamp(v: unknown, min: number, max: number, dflt: number) {

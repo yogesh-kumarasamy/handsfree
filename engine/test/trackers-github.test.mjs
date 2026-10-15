@@ -16,6 +16,18 @@ test("parseGithubIssues: JSON and text fallback, key = repo#number", () => {
   assert.deepEqual(parseGithubIssues("#7  Crash on save\n#8\tSlow list", "repo").map((i) => [i.key, i.summary]), [["repo#7", "Crash on save"], ["repo#8", "Slow list"]]);
 });
 
+test("parseGithubIssues: labels give the branch type (bug label → bug, otherwise feature; no labels → unset)", () => {
+  const j = parseGithubIssues(
+    JSON.stringify([
+      { number: 1, title: "A", labels: [{ name: "enhancement" }, { name: "bug" }] },
+      { number: 2, title: "B", labels: [{ name: "docs" }] },
+      { number: 3, title: "C", labels: [] },
+    ]),
+    "repo",
+  );
+  assert.deepEqual(j.map((i) => i.type), ["bug", "feature", undefined]);
+});
+
 test("GithubTracker: search/comment/close commands with the resolved repo; empty doneStatus skips", async () => {
   const calls = [];
   const run = async (cmd) => { calls.push(cmd); return { code: 0, stdout: cmd.includes("issue list") ? "[]" : "", stderr: "", timedOut: false }; };

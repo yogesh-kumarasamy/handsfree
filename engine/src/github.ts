@@ -11,13 +11,13 @@ async function gh(cwd: string, args: string[]) {
 }
 
 /** Open (or find the existing) PR for the ticket's branch. Returns its URL. */
-export async function openPr(project: ProjectConfig, t: Ticket, body: string): Promise<string> {
+export async function openPr(project: ProjectConfig, t: Ticket, title: string, body: string): Promise<string> {
   const existing = await gh(t.worktree, ["pr", "list", "--head", t.branch, "--state", "open", "--json", "url", "--jq", ".[0].url"]).catch(() => "");
   if (existing) return existing;
   const bodyFile = path.join(t.worktree, ".handsfree", "pr-body.md");
   fs.mkdirSync(path.dirname(bodyFile), { recursive: true });
   fs.writeFileSync(bodyFile, body);
-  const args = ["pr", "create", "--base", project.baseBranch, "--head", t.branch, "--title", `${t.key}: ${t.summary}`.slice(0, 250), "--body-file", bodyFile];
+  const args = ["pr", "create", "--base", project.baseBranch, "--head", t.branch, "--title", title.slice(0, 250), "--body-file", bodyFile];
   if (project.draftPr) args.push("--draft");
   const out = await gh(t.worktree, args);
   const url = out.split("\n").reverse().find((l) => /^https?:\/\//.test(l.trim()));

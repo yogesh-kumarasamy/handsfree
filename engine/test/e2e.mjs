@@ -72,6 +72,9 @@ while read -r line; do
   echo '{"type":"result","subtype":"success","is_error":false,"num_turns":2,"result":"Summary: nothing to change"}'
 done
 exit 0`);
+// naming agent: commits with a subject that breaks the project's commit pattern and leaves a file uncommitted
+script("fakenamer", `[ "$1" = "--version" ] && { echo "fakenamer 1.0"; exit 0; }
+echo thing > thing.txt; git add -A; git commit -qm "$HANDSFREE_ISSUE: do the thing"; echo left > left.txt`);
 // agent 1: edits a file, then dies on a rate limit
 script("fakegrok", `echo "working on $HANDSFREE_ISSUE"; echo "partial" > partial.txt; echo "Error: 429 rate limit exceeded" >&2; exit 1`);
 // agent 2: sees the previous work, commits
@@ -682,6 +685,44 @@ try {
   const eng8After = await ticket("ENG-8");
   assert.equal(eng8After.status, "merged");
   assert.notEqual(eng8After.trackerDone, true);
+
+  // ---- Naming conventions: branch, commit subjects and PR title come from the project's templates and must match its patterns
+  const BRANCH_RE = "^dependabot|changeset|([A-Za-z]{1,10}-\\d+(\\/)(release|feature|hotfix|config|bug|spike|refactor|improvement)(\\/.*))|staging|main";
+  const COMMIT_RE = "^((build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([\\w\\-\\.]+\\))?(!)?:([\\w ])+([\\s\\S]*[A-Za-z]{1,10}-\\d+))|Merge branch|Revert";
+  project.agents = [{ id: "nm", name: "Namer", command: "fakenamer", enabled: true, exhaustionPatterns: [] }];
+  project.naming = {
+    branch: { template: "{key}/{type}/{slug}", pattern: BRANCH_RE },
+    commit: { template: "{type_cc}: {key} {summary}", pattern: COMMIT_RE },
+    prTitle: { template: "{key} {summary}", pattern: "^[A-Za-z]{1,10}-\\d+ " },
+  };
+  const cfgNm = await api("/api/config");
+  await api("/api/config", "PUT", { ...cfgNm, projects: [project] });
+  await api("/api/tickets/DEMO-2/forget", "POST");
+  await api("/api/poll-now", "POST");
+  const named = await waitFor(async () => {
+    const t = (await api("/api/state")).tickets["DEMO-2"];
+    return t?.status === "pr_draft" && t;
+  }, "DEMO-2 PR under the naming rules");
+  assert.equal(named.branch, "DEMO-2/feature/second-ticket", "branch rendered from the template (no issue type → feature)");
+  assert.deepEqual(
+    sh(`git log --format=%s main..DEMO-2/feature/second-ticket`, remote).split("\n"),
+    ["feat: DEMO-2 Second ticket", "feat: DEMO-2 do the thing"],
+    "HandsFree's own commit uses the template; the agent's non-matching subject was reworded before the push",
+  );
+  assert.match(fs.readFileSync(path.join(root, "prs.log"), "utf8").trim().split("\n").pop(), /--title DEMO-2 Second ticket --body-file/, "PR title from the template");
+  assert.match((await api("/api/tickets/DEMO-2/log")).log, /✎ Reworded 1 commit/);
+
+  // A branch template that can't satisfy its own pattern stops the ticket before any agent runs
+  project.naming = { ...project.naming, branch: { template: "handsfree/{key}", pattern: BRANCH_RE } };
+  await api("/api/config", "PUT", { ...(await api("/api/config")), projects: [project] });
+  await api("/api/tickets/DEMO-2/forget", "POST");
+  await api("/api/poll-now", "POST");
+  const rejected = await waitFor(async () => {
+    const t = (await api("/api/state")).tickets["DEMO-2"];
+    return t?.status === "failed" && t;
+  }, "DEMO-2 rejected by the branch pattern");
+  assert.match(rejected.error, /handsfree\/DEMO-2.*doesn't match/);
+  assert.doesNotMatch((await api("/api/tickets/DEMO-2/log")).log, /▶ Agent/, "no agent ran");
 
   const doc = await api("/api/doctor");
   assert.ok(doc.find((d) => d.name === "gh").ok);

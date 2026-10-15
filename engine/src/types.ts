@@ -1,5 +1,8 @@
 // Shared between the engine and the React UI.
 
+import type { NamingConfig } from "./naming";
+export type { NamingConfig, NamingRule } from "./naming";
+
 export interface AgentConfig {
   id: string;
   name: string;
@@ -32,6 +35,8 @@ export interface ProjectConfig {
   agents: AgentConfig[];
   /** Extra instructions appended to every prompt for this project. */
   promptExtra: string;
+  /** How branches, commit subjects and PR titles are built and what they must match (see naming.ts). */
+  naming: NamingConfig;
   draftPr: boolean;
   /** When CI fails on the PR, run the agent chain in the same worktree with the failing logs. */
   ciAutoFix: boolean;
@@ -273,6 +278,8 @@ export interface Ticket {
   branch: string;
   worktree: string;
   baseRef?: string;
+  /** Branch type keyword from the tracker (bug, feature…), used by the naming templates. */
+  type?: string;
   /** Index into the project's enabled agent chain the next run starts from. */
   agentIndex: number;
   currentAgent?: string;
@@ -318,6 +325,8 @@ export interface FoundIssue {
   /** Tracker-internal id when it differs from the key (Linear issue id, GitHub number). */
   id?: string;
   url?: string;
+  /** Branch type keyword (bug, feature, spike…) derived from the issue type or labels; see naming.ts `issueTypeOf`. */
+  type?: string;
 }
 
 export type EngineEvent =

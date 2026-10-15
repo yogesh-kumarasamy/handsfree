@@ -14,6 +14,11 @@ test("JiraTracker.transition: default command, status shell-quoted; empty status
   assert.equal(parseIssues('[{"key":"X-2","fields":{"summary":"S"}}]')[0].key, "X-2");
 });
 
+test("parseIssues: the Jira issue type is mapped onto the branch type keyword", () => {
+  const list = parseIssues('[{"key":"X-3","fields":{"summary":"S","issuetype":{"name":"Bug"}}},{"key":"X-4","fields":{"summary":"T","issuetype":{"name":"Story"}}},{"key":"X-5","fields":{"summary":"U"}}]');
+  assert.deepEqual(list.map((i) => [i.key, i.type]), [["X-3", "bug"], ["X-4", "feature"], ["X-5", undefined]]);
+});
+
 test("JiraTracker.comment: empty = default command, '-' = skipped; a failing transition throws", async () => {
   const calls = [];
   const run = async (cmd) => { calls.push(cmd); return cmd.includes("transition") ? { code: 1, stdout: "", stderr: "no such status", timedOut: false } : { code: 0, stdout: "", stderr: "", timedOut: false }; };

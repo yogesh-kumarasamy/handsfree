@@ -1,4 +1,5 @@
 // GitHub Issues through the GitHub CLI (`gh`), using the login already on the Mac.
+import { issueTypeOf, labelNames } from "../naming";
 import { fill } from "../shell";
 import { DEFAULT_GITHUB_CLOSE, DEFAULT_GITHUB_COMMENT, DEFAULT_GITHUB_SEARCH, TRACKER_NOUN, type FoundIssue } from "../types";
 import { defaultRun, failure, type Run, type TicketRef, type TrackerAdapter, type TrackerProject } from "./adapter";
@@ -21,12 +22,14 @@ export function parseGithubIssues(output: string, repoName: string): FoundIssue[
   if (parsed !== undefined) {
     const list = Array.isArray(parsed) ? parsed : Array.isArray((parsed as { issues?: unknown[] })?.issues) ? (parsed as { issues: unknown[] }).issues : [];
     for (const raw of list) {
-      const i = raw as { number?: number | string; title?: string; body?: string; url?: string };
+      const i = raw as { number?: number | string; title?: string; body?: string; url?: string; labels?: unknown[] };
       if (i?.number === undefined || !/^\d+$/.test(String(i.number))) continue;
       const n = String(i.number);
       const issue: FoundIssue = { key: `${repoName}#${n}`, summary: String(i.title ?? ""), id: n };
       if (i.body?.trim()) issue.description = i.body;
       if (i.url) issue.url = i.url;
+      const labels = labelNames(i.labels);
+      if (labels.length) issue.type = issueTypeOf(labels);
       out.push(issue);
     }
     return out;
