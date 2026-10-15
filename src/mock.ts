@@ -320,8 +320,20 @@ export function createMockApi(opts: DemoOptions): Api {
       return { url: "https://auth.setmore.com/o/oauth2/auth?demo=1" };
     },
     setmoreLogout: async () => {
-      state = { ...state, accounts: { setmore: { loggedIn: false }, linear: { loggedIn: false } } };
+      state = { ...state, accounts: { ...state.accounts, setmore: { loggedIn: false } } };
       emit({ type: "account", name: "setmore", status: state.accounts.setmore });
+    },
+    linearStatus: async () => state.accounts.linear,
+    linearLogin: async () => {
+      setTimeout(() => {
+        state = { ...state, accounts: { ...state.accounts, linear: { loggedIn: true, user: "yogesh@anywhere.co" } } };
+        emit({ type: "account", name: "linear", status: state.accounts.linear });
+      }, 1000);
+      return { url: "https://mcp.linear.app/authorize?demo=1" };
+    },
+    linearLogout: async () => {
+      state = { ...state, accounts: { ...state.accounts, linear: { loggedIn: false } } };
+      emit({ type: "account", name: "linear", status: state.accounts.linear });
     },
     publish: async (k) => {
       const t = state.tickets[k];
@@ -356,7 +368,7 @@ export function createMockApi(opts: DemoOptions): Api {
         emit({ type: "state", state });
       }
     },
-    testJira: async () => ({
+    testTracker: async () => ({
       issues: [
         { key: "CSW-1425", summary: "Persist agent's last-used canned response" },
         { key: "CSW-1431", summary: "Show 'agent is away' banner after 5 min idle" },

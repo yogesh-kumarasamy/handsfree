@@ -220,7 +220,7 @@ function ProjectEditor({
   const testJira = async () => {
     setJira({ loading: true });
     try {
-      setJira(await api.testJira(p));
+      setJira(await api.testTracker(p));
     } catch (e) {
       setJira({ error: String((e as Error).message || e) });
     }
