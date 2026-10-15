@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import type { Config, EngineState, MessageKind, ProjectConfig, RoutineConfig, RoutineRun, RoutineState } from "../types";
 import { DEFAULT_ROUTINE_COMMAND } from "../types";
-import { exec, fill, sh, type RunOpts, type RunResult } from "../shell";
+import { exec, fill, SHELL, start as startProcess, type RunOpts, type Running } from "../shell";
 import { lastJson } from "../messaging/agent";
 import { fillTemplate } from "../messaging/templates";
 import { nextRun, parseCron } from "./cron";
@@ -15,7 +15,8 @@ export interface RoutineDeps {
   log: (routineId: string, chunk: string) => void;
   notify: (title: string, body: string) => void;
   messaging: { postToProject(p: ProjectConfig, text: string, kind: MessageKind, idempotencyKey: string): Promise<{ id?: string }> };
-  run?: (cmd: string, opts?: RunOpts) => Promise<RunResult>;
+  /** Starts the agent's shell command; `kill` stops its whole process group (shutdown). Default: shell.start. */
+  run?: (cmd: string, opts?: RunOpts) => Running;
   now?: () => Date;
   maxConcurrent?: number;
 }
@@ -25,6 +26,9 @@ const TICK_MS = 30_000;
 export class RoutineService {
   private timer?: NodeJS.Timeout;
   private running = new Set<string>();
+  /** Live agent processes by routine id, killed on shutdown so no agent outlives the engine. */
+  private procs = new Map<string, Running>();
+  private quitting = false;
   constructor(public deps: RoutineDeps) {}
 
   private now() {
@@ -33,11 +37,15 @@ export class RoutineService {
   private all(): { p: ProjectConfig; r: RoutineConfig }[] {
     return this.deps.config().projects.flatMap((p) => (p.routines || []).map((r) => ({ p, r })));
   }
+  /** A project switched Off pauses its routines (the global Pause does not). */
+  private active(p: ProjectConfig, r: RoutineConfig) {
+    return r.enabled && p.enabled !== false;
+  }
   private stateFor(id: string): RoutineState {
     return (this.deps.state().routines[id] ||= {});
   }
-  private schedule(r: RoutineConfig, after: Date): string | undefined {
-    const spec = r.enabled ? parseCron(r.schedule) : undefined;
+  private schedule(p: ProjectConfig, r: RoutineConfig, after: Date): string | undefined {
+    const spec = this.active(p, r) ? parseCron(r.schedule) : undefined;
     if (!spec || spec instanceof Error) return undefined;
     const n = nextRun(spec, after);
     return n instanceof Error ? undefined : n.toISOString();
@@ -54,9 +62,13 @@ export class RoutineService {
     this.timer = setInterval(() => void this.tick().catch(() => undefined), TICK_MS);
   }
 
+  /** Stops the tick and kills running agents; their runs are recorded as quit on the next start(). */
   shutdown() {
     clearInterval(this.timer);
     this.timer = undefined;
+    this.quitting = true;
+    for (const proc of this.procs.values()) proc.kill();
+    this.procs.clear();
   }
 
   /**
@@ -67,10 +79,10 @@ export class RoutineService {
     const s = this.deps.state();
     const now = this.now();
     const ids = new Set<string>();
-    for (const { r } of this.all()) {
+    for (const { p, r } of this.all()) {
       ids.add(r.id);
       const st = this.stateFor(r.id);
-      const next = this.schedule(r, now);
+      const next = this.schedule(p, r, now);
       if (!next) st.nextRunAt = undefined;
       else if (!(st.nextRunAt && Date.parse(st.nextRunAt) <= now.getTime())) st.nextRunAt = next;
     }
@@ -83,10 +95,10 @@ export class RoutineService {
     const runs: Promise<void>[] = [];
     for (const { p, r } of this.all()) {
       const st = this.deps.state().routines[r.id];
-      if (!r.enabled || !st?.nextRunAt || Date.parse(st.nextRunAt) > now.getTime()) continue;
+      if (!this.active(p, r) || !st?.nextRunAt || Date.parse(st.nextRunAt) > now.getTime()) continue;
       if (this.running.has(r.id)) {
         // Still going when its next slot came: skip that slot (no overlapping runs of one routine).
-        st.nextRunAt = this.schedule(r, now);
+        st.nextRunAt = this.schedule(p, r, now);
         this.deps.log(r.id, `\n· ${r.name}: skipped the ${now.toLocaleString()} slot, the previous run is still going\n`);
         this.deps.persist();
         continue;
@@ -99,7 +111,9 @@ export class RoutineService {
 
   /** Why `runNow(id)` would be refused, or undefined when it can start. */
   cannotRun(id: string): string | undefined {
-    if (!this.all().some(({ r }) => r.id === id)) return "Unknown routine";
+    const hit = this.all().find(({ r }) => r.id === id);
+    if (!hit) return "Unknown routine";
+    if (hit.p.enabled === false) return "This project is paused — switch it on to run its routines.";
     if (this.running.has(id)) return "This routine is already running.";
     return undefined;
   }
@@ -119,7 +133,7 @@ export class RoutineService {
     st.running = true;
     this.running.add(r.id);
     // Schedule the next slot from now, so an overdue routine runs once and moves on (no catch-up storm).
-    st.nextRunAt = this.schedule(r, now);
+    st.nextRunAt = this.schedule(p, r, now);
     this.deps.persist();
     try {
       const vars = {
@@ -127,18 +141,23 @@ export class RoutineService {
         repo: await repoSlug(p),
         repo_path: p.repoPath,
         channel: p.messaging.channelName || p.messaging.channelId,
-        last_run: prevOk ? new Date(prevOk).toLocaleString() : "the beginning",
+        // Machine-readable like {now}; {last_run_human} is for sentences.
+        last_run: prevOk || "the beginning",
+        last_run_human: prevOk ? new Date(prevOk).toLocaleString() : "the beginning",
         now: now.toISOString(),
       };
       const prompt = fillTemplate(r.prompt, vars);
       const cmd = fill(r.agentCommand.trim() || DEFAULT_ROUTINE_COMMAND, { prompt });
       this.deps.log(r.id, `\n▶ ${r.name} · ${run.startedAt}\n$ ${cmd.slice(0, 300)}\n`);
-      const res = await (this.deps.run || sh)(cmd, {
+      const proc = (this.deps.run || ((c: string, o?: RunOpts) => startProcess(SHELL, ["-c", c], o)))(cmd, {
         cwd: p.repoPath || undefined,
         timeoutMs: r.timeoutMin * 60_000,
         env: { HANDSFREE: "1", HANDSFREE_ROUTINE: r.id },
         onData: (d) => this.deps.log(r.id, d),
       });
+      this.procs.set(r.id, proc);
+      const res = await proc.done.finally(() => this.procs.delete(r.id));
+      if (this.quitting) throw new Error("HandsFree was quit");
       if (res.timedOut) throw new Error(`Timed out after ${r.timeoutMin} min`);
       if (res.code !== 0) throw new Error(`The agent exited with exit ${res.code}: ${(res.stderr || res.stdout || "").trim().slice(-400)}`);
       const env = lastJson(res.stdout || "");
@@ -153,7 +172,7 @@ export class RoutineService {
       run.ok = false;
       run.output = String((e as Error).message || e).slice(0, 4000);
       this.deps.log(r.id, `\n✖ ${run.output}\n`);
-      this.deps.notify(`${r.name} failed`, run.output.slice(0, 200));
+      if (!this.quitting) this.deps.notify(`${r.name} failed`, run.output.slice(0, 200));
     } finally {
       run.endedAt = this.now().toISOString();
       st.running = false;

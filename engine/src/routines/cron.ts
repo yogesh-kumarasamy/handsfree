@@ -56,37 +56,44 @@ export function parseCron(expr: string): CronSpec | Error {
   return { ...(parsed as Omit<CronSpec, "wild">), wild: { dom: fields[2] === "*", dow: fields[4] === "*" } };
 }
 
-/** Next matching minute strictly after `after`, local time. Error when nothing matches within 4 years (a Feb 29 schedule needs up to that). */
+/**
+ * Next matching minute strictly after `after`, local time. Error when nothing matches within 4 years (a Feb 29 schedule
+ * needs up to that). Minutes and hours advance on the epoch, so the repeated local hour at a DST fall-back is walked
+ * through in real time (local setters would resolve it to the earlier offset and step backwards). A local time that
+ * does not exist (spring-forward gap) is skipped that day.
+ */
 export function nextRun(spec: CronSpec, after: Date): Date | Error {
-  const t = new Date(after.getTime());
-  t.setSeconds(0, 0);
-  t.setMinutes(t.getMinutes() + 1);
+  const MIN = 60_000;
+  let t = new Date(Math.floor(after.getTime() / MIN) * MIN + MIN);
   const limit = after.getTime() + (4 * 365 + 2) * 86_400_000;
   while (t.getTime() <= limit) {
     if (!spec.month.includes(t.getMonth() + 1)) {
-      t.setMonth(t.getMonth() + 1, 1);
-      t.setHours(0, 0, 0, 0);
+      t = forward(t, new Date(t.getFullYear(), t.getMonth() + 1, 1, 0, 0, 0, 0));
       continue;
     }
     const domOk = spec.dom.includes(t.getDate());
     const dowOk = spec.dow.includes(t.getDay());
     const dayOk = spec.wild.dom && spec.wild.dow ? true : spec.wild.dom ? dowOk : spec.wild.dow ? domOk : domOk || dowOk;
     if (!dayOk) {
-      t.setDate(t.getDate() + 1);
-      t.setHours(0, 0, 0, 0);
+      t = forward(t, new Date(t.getFullYear(), t.getMonth(), t.getDate() + 1, 0, 0, 0, 0));
       continue;
     }
     if (!spec.hour.includes(t.getHours())) {
-      t.setHours(t.getHours() + 1, 0, 0, 0);
+      t = new Date(t.getTime() + (60 - t.getMinutes()) * MIN);
       continue;
     }
     if (!spec.min.includes(t.getMinutes())) {
-      t.setMinutes(t.getMinutes() + 1, 0, 0);
+      t = new Date(t.getTime() + MIN);
       continue;
     }
     return t;
   }
   return new Error("This schedule never matches a real date.");
+}
+
+/** A day/month skip built with local setters; never lets the search move backwards. */
+function forward(from: Date, to: Date): Date {
+  return to.getTime() > from.getTime() ? to : new Date(from.getTime() + 60_000);
 }
 
 const two = (n: number) => String(n).padStart(2, "0");

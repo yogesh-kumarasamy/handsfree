@@ -658,6 +658,9 @@ function RoutinesStep({
         Scheduled agent runs for this project — a daily PR report, a Sentry check — whose final text is posted to the project's collab channel
         {p.messaging.platform === "none" ? " (no messaging platform yet: results stay in HandsFree)" : ""}. Optional.
       </p>
+      {!p.enabled && p.routines.length > 0 && (
+        <div className="callout warn" style={{ marginBottom: 12 }}><span className="t">Paused with the project: routines don't run while the project is Off.</span></div>
+      )}
       {p.routines.map((r) => {
         const spec = parseCron(r.schedule);
         const st = state?.routines?.[r.id];
@@ -671,8 +674,8 @@ function RoutinesStep({
               <div className="spacer" />
               <button
                 className="btn sm"
-                disabled={!isSaved || st?.running}
-                title={isSaved ? "Run it now, ignoring the schedule" : "Save the project first"}
+                disabled={!isSaved || st?.running || !p.enabled}
+                title={!p.enabled ? "Paused with the project" : isSaved ? "Run it now, ignoring the schedule" : "Save the project first"}
                 onClick={() => runNow(r.id)}
               >
                 {st?.running ? "Running…" : "Run now"}
@@ -692,7 +695,7 @@ function RoutinesStep({
             <div className="field">
               <label>Prompt</label>
               <textarea className="textarea" rows={6} value={r.prompt} onChange={(e) => setRoutine(r.id, { prompt: e.target.value })} />
-              <span className="hint">Placeholders: <span className="mono">{"{project} {repo} {repo_path} {channel} {last_run} {now}"}</span>. The agent's final text is the report.</span>
+              <span className="hint">Placeholders: <span className="mono">{"{project} {repo} {repo_path} {channel} {now} {last_run} {last_run_human}"}</span>. The agent's final text is the report.</span>
             </div>
             <details>
               <summary className="small muted" style={{ cursor: "pointer" }}>Advanced</summary>
@@ -700,8 +703,9 @@ function RoutinesStep({
                 <label className="small">Agent command</label>
                 <input className="input code" value={r.agentCommand} placeholder={DEFAULT_ROUTINE_COMMAND} onChange={(e) => setRoutine(r.id, { agentCommand: e.target.value })} />
                 <span className="hint">
-                  <span className="mono">{"{prompt}"}</span> is filled in. Must print Claude's <span className="mono">--output-format json</span> envelope. Runs in the repo with
-                  <span className="mono"> --dangerously-skip-permissions</span> by default.
+                  <span className="mono">{"{prompt}"}</span> is filled in. Must print Claude's <span className="mono">--output-format json</span> envelope. Runs in the repo. List the
+                  tools the prompt needs with <span className="mono">--allowedTools</span> (the presets do); nothing is pre-approved otherwise. Opt into
+                  <span className="mono"> --dangerously-skip-permissions</span> yourself only if you accept that the agent can run anything.
                 </span>
               </div>
               <div className="row" style={{ gap: 18 }}>

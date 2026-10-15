@@ -614,7 +614,8 @@ function FirstRun({ onNewProject }: { onNewProject: () => void }) {
 
 /** Scheduled agent runs across projects: next/last run, Run now, and the routine's log inline. */
 function RoutinesCard({ api, config, state }: { api: Api; config: Config; state: EngineState }) {
-  const rows = config.projects.flatMap((p) => p.routines.filter((r) => r.enabled).map((r) => ({ p, r })));
+  // A project switched Off pauses its routines: they are neither scheduled nor shown here.
+  const rows = config.projects.filter((p) => p.enabled).flatMap((p) => p.routines.filter((r) => r.enabled).map((r) => ({ p, r })));
   const [open, setOpen] = useState<string>();
   const [log, setLog] = useState("");
   const [error, setError] = useState<{ id: string; text: string }>();

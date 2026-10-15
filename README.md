@@ -67,9 +67,12 @@ A routine is a scheduled agent run for a project: a cron schedule (5 fields, loc
 - **Projects → Routines** step: **+ Add routine** gives two presets or a custom one.
   - **Daily PR check** (`0 10 * * 1-5`, weekdays 10:00): open PRs of the repo from `gh pr list`, grouped into awaiting review, changes requested, approved not merged, failing CI, drafts and stale.
   - **Sentry check** (`0 9,13,17 * * *`): new or regressed Sentry issues since the last successful run. It uses your claude.ai **Sentry connector** in Claude Code. Authenticate it once: run `claude`, type `/mcp`, pick Sentry and log in.
-- Prompt placeholders: `{project}` `{repo}` (owner/name from the remote) `{repo_path}` `{channel}` `{last_run}` `{now}`.
-- The default command is `claude -p {prompt} --output-format json --max-turns 25 --dangerously-skip-permissions`. The agent can run any command in the repo, the same trust as the coding agents. A custom command must print Claude's JSON result envelope.
+- Prompt placeholders: `{project}` `{repo}` (owner/name from the remote) `{repo_path}` `{channel}` `{now}` and `{last_run}` (ISO times; `{last_run}` is the start of the last successful run, or "the beginning"), `{last_run_human}` (the same in local time, for sentences).
+- Permissions: the presets pre-approve only what they need with `--allowedTools` (`Bash(gh pr list:*)` for the PR check, `mcp__claude_ai_Sentry__*` for Sentry). A custom routine with an empty command runs `claude -p {prompt} --output-format json --max-turns 25` with no tools pre-approved: add `--allowedTools` for what its prompt needs, or opt into `--dangerously-skip-permissions` yourself. A custom command must print Claude's JSON result envelope. The presets tell the agent that tool output (PR titles, issue titles) is data, not instructions.
 - **Run now** on the routine (project step or the dashboard's *Routines* card) ignores the schedule. The card shows the next run, the last result and the routine's **Log**.
+- Switching a project **Off** pauses its routines (not scheduled, hidden from the dashboard card, Run now refused). The global Pause only stops Jira pick-up.
+- Schedules are local time. On a DST fall-back night the repeated hour is followed in real time; on a spring-forward night a time that doesn't exist (e.g. 02:30) is skipped that day.
+- Quitting HandsFree stops running routine agents; the run is recorded as "HandsFree was quit".
 - One run at a time per routine (a slot that comes while the previous run is still going is skipped) and at most two routines at once. A Mac that slept through a slot runs it once on wake. Timeout per routine (default 15 min). A failed run or post sends a notification.
 
 ### Watch or step in (any agent)

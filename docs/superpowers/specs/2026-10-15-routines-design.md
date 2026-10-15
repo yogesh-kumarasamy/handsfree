@@ -56,7 +56,8 @@ routines: Record<string /* routine id */, RoutineState>;
 // MessageKind addition
 | "routine"
 
-export const DEFAULT_ROUTINE_COMMAND = "claude -p {prompt} --output-format json --max-turns 25 --dangerously-skip-permissions";
+// Fix pass: no --dangerously-skip-permissions; the presets carry their own agentCommand with --allowedTools.
+export const DEFAULT_ROUTINE_COMMAND = "claude -p {prompt} --output-format json --max-turns 25";
 
 export const ROUTINE_PRESETS: Omit<RoutineConfig, "id">[] = [
   {
@@ -147,6 +148,8 @@ Resolves the adapter like `sendTest`, sends, logs to the engine log (no ticket),
 ## 5. Behaviour and edge cases
 
 - Invalid cron: routine stays disabled at runtime (`nextRunAt` undefined), UI shows the parse error.
+- DST (fix pass): `nextRun` walks minutes/hours on the epoch, so the repeated hour at a fall-back is followed in real time and the result is always strictly after `after`. A local time that does not exist at a spring-forward (e.g. 02:30) is skipped that day.
+- Project Off (fix pass): a project with `enabled: false` pauses its routines (no `nextRunAt`, tick skips, Run now → "This project is paused"); the global Pause does not.
 - Engine asleep (Mac closed) past a scheduled time: on wake the tick runs any routine whose `nextRunAt` is in the past **once**, then schedules forward (no catch-up storms).
 - Timeout: the agent is killed (`sh` timeout), run recorded `ok: false, output: "Timed out after N min"`.
 - Posting without a channel: run recorded ok, `posted: false, postError: "no channel configured"`; no notification spam (one log line).
