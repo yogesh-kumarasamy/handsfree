@@ -124,14 +124,14 @@ export function Dashboard({
         <div>
           <h1 className="page-title">Dashboard</h1>
           <div className="page-sub">
-            Jira checked {ago(state.lastPollAt)} · {config.settings.paused ? "paused" : `next ${until(state.nextPollAt)}`}
+            Tickets checked {ago(state.lastPollAt)} · {config.settings.paused ? "paused" : `next ${until(state.nextPollAt)}`}
             {" · "}PRs checked {ago(state.lastPrCheckAt)} · next {until(state.nextPrCheckAt)}
           </div>
         </div>
         <div className="row">
           <button className="btn" onClick={() => act("Check PRs", () => api.checkPrsNow())}>{Icon.refresh} Check PRs now</button>
           <button className="btn" onClick={() => api.pollNow()} disabled={config.settings.paused}>
-            {Icon.refresh} Check Jira now
+            {Icon.refresh} Check tickets now
           </button>
         </div>
       </div>
@@ -187,7 +187,7 @@ export function Dashboard({
             <div className="section-head"><div className="card-title" style={{ margin: 0 }}>In progress</div><span className="count">{work.length}</span></div>
             {work.length === 0 ? (
               <div className="empty" style={{ padding: "28px 20px" }}>
-                <p style={{ marginBottom: 0 }}>Nothing running. HandsFree checks your JQL every {config.settings.pollIntervalMin} min.</p>
+                <p style={{ marginBottom: 0 }}>Nothing running. HandsFree checks your tracker queries every {config.settings.pollIntervalMin} min.</p>
               </div>
             ) : (
               <div className="table-wrap">
@@ -459,7 +459,7 @@ function TicketDetail({ api, ticket, project, prError, onCompose, onClose }: { a
             <button className="btn sm" onClick={() => api.cleanup(ticket.key)}>Clean up worktree</button>
           )}
           {ticket.status !== "running" && (
-            <button className="btn sm ghost" onClick={() => api.forget(ticket.key)} title="Remove from HandsFree; it will be picked up again if your JQL still matches">Forget</button>
+            <button className="btn sm ghost" onClick={() => api.forget(ticket.key)} title="Remove from HandsFree; it will be picked up again if your tracker query still matches">Forget</button>
           )}
         </div>
       </div>
@@ -468,7 +468,12 @@ function TicketDetail({ api, ticket, project, prError, onCompose, onClose }: { a
           <dt>Project</dt><dd>{project?.name}</dd>
           <dt>Branch</dt><dd className="mono">{ticket.branch}</dd>
           <dt>Worktree</dt><dd className="mono" title={ticket.worktree}>{ticket.worktree.replace(/^\/Users\/[^/]+/, "~")}</dd>
-          <dt>Jira</dt><dd>{ticket.jiraCommented ? "PR link commented ✓" : ticket.prUrl ? "Comment pending" : "—"}</dd>
+          <dt>Tracker</dt>
+          <dd className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+            {ticket.issueUrl && <a href="#" onClick={(e) => { e.preventDefault(); openExternal(ticket.issueUrl!); }}>{ticket.key} ↗</a>}
+            <span>{ticket.jiraCommented ? "PR link commented ✓" : ticket.prUrl ? "Comment pending" : "—"}</span>
+            {ticket.trackerDone && <span>· Moved to {project?.tracker.doneStatus || "done"} ✓</span>}
+          </dd>
           {ticket.pr && (
             <>
               <dt>PR</dt>
@@ -502,7 +507,7 @@ function TicketDetail({ api, ticket, project, prError, onCompose, onClose }: { a
               <b>You have this ticket.</b> HandsFree won't touch it until you hand it back.
             </span>
             <div className="row" style={{ flexWrap: "wrap" }}>
-              <button className="btn sm primary" onClick={() => run(() => api.handBack(ticket.key, "pr"))} title="Commit what's in the worktree, push, open a draft PR and comment on Jira">
+              <button className="btn sm primary" onClick={() => run(() => api.handBack(ticket.key, "pr"))} title="Commit what's in the worktree, push, open a draft PR and comment on the ticket">
                 Open PR with my changes
               </button>
               <button className="btn sm" onClick={() => run(() => api.handBack(ticket.key, "agents"))} title="Run the agent chain again; agents are told you changed things">
@@ -586,14 +591,14 @@ function FirstRun({ onNewProject }: { onNewProject: () => void }) {
         <Logo size={56} />
         <h2>Let your tickets walk themselves to a PR</h2>
         <p>
-          Add a project and HandsFree will watch Jira, give each ticket its own git worktree, run your agents
+          Add a project and HandsFree will watch your tracker (Jira, GitHub Issues or Linear), give each ticket its own git worktree, run your agents
           one after another until one succeeds, and open a draft PR.
         </p>
         <button className="btn primary" onClick={onNewProject}>{Icon.plus} Create your first project</button>
         <div className="journey">
           {[
             ["Pick a repo", "Any local git repo + base branch"],
-            ["Add a JQL", "Which tickets to pick up"],
+            ["Pick a tracker", "Which tickets to pick up"],
             ["MCP servers", "JSON passed to every agent"],
             ["Agent chain", "Up to 4, in fallback order"],
           ].map(([b, s], i) => (

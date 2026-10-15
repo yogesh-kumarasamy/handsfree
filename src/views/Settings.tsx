@@ -11,11 +11,17 @@ export function SettingsView({ api, config }: { api: Api; config: Config }) {
   const s = config.settings;
   const sm = s.accounts.setmore;
   const updateSetmore = (patch: Partial<typeof sm>) => update({ accounts: { ...s.accounts, setmore: { ...sm, ...patch } } });
+  const lin = s.accounts.linear;
+  const updateLinear = (patch: Partial<typeof lin>) => update({ accounts: { ...s.accounts, linear: { ...lin, ...patch } } });
+  const [linAcct, setLinAcct] = useState<AccountStatus>();
+  const [linMsg, setLinMsg] = useState<string>();
 
   useEffect(() => {
     api.setmoreStatus().then(setAcct).catch(() => {});
+    api.linearStatus().then(setLinAcct).catch(() => {});
     return api.subscribe((e) => {
       if (e.type === "account" && e.name === "setmore") setAcct(e.status);
+      if (e.type === "account" && e.name === "linear") setLinAcct(e.status);
     });
   }, []);
   const login = async () => {
@@ -26,6 +32,17 @@ export function SettingsView({ api, config }: { api: Api; config: Config }) {
       setLoginMsg("Finish signing in in your browser, then come back here.");
     } catch (e) {
       setLoginMsg(String((e as Error).message || e));
+    }
+  };
+
+  const linearLogin = async () => {
+    setLinMsg(undefined);
+    try {
+      const { url } = await api.linearLogin();
+      await openExternal(url);
+      setLinMsg("Finish signing in to Linear in your browser, then come back here.");
+    } catch (e) {
+      setLinMsg(String((e as Error).message || e));
     }
   };
 
@@ -63,14 +80,14 @@ export function SettingsView({ api, config }: { api: Api; config: Config }) {
       <div className="page-head">
         <div>
           <h1 className="page-title">Settings</h1>
-          <div className="page-sub">App-wide behaviour. Repos, JQL, MCP and agents live on each project.</div>
+          <div className="page-sub">App-wide behaviour. Repos, tracker queries, MCP and agents live on each project.</div>
         </div>
       </div>
 
       <div className="card card-pad" style={{ marginBottom: 16 }}>
         <h3 className="card-title">Orchestrator</h3>
         <div className="setting-row">
-          <div className="txt"><b>Check Jira every</b><span>How often each project's JQL is run.</span></div>
+          <div className="txt"><b>Check tickets every</b><span>How often each project's tracker query is run.</span></div>
           {num("pollIntervalMin", 1, 240)}<span className="muted">min</span>
         </div>
         <div className="setting-row">
@@ -111,7 +128,7 @@ export function SettingsView({ api, config }: { api: Api; config: Config }) {
       </div>
 
       <div className="card card-pad" style={{ marginBottom: 16 }}>
-        <h3 className="card-title">Accounts</h3>
+        <h3 className="card-title">Accounts · Setmore</h3>
         <p className="card-sub">Setmore collab messages are sent as you. HandsFree signs in once with the client id the auth team issued; tokens stay on this Mac.</p>
         <div className="field">
           <label>Setmore client id</label>
@@ -138,6 +155,32 @@ export function SettingsView({ api, config }: { api: Api; config: Config }) {
             <div className="field"><label>Issuer</label><input className="input code" value={sm.issuer} onChange={(e) => updateSetmore({ issuer: e.target.value })} /></div>
           </div>
           <div className="field"><label>Scopes</label><input className="input code" value={sm.scopes} onChange={(e) => updateSetmore({ scopes: e.target.value })} /></div>
+        </details>
+      </div>
+
+      <div className="card card-pad" style={{ marginBottom: 16 }}>
+        <h3 className="card-title">Linear</h3>
+        <p className="card-sub">For projects whose tracker is Linear. HandsFree registers itself with Linear the first time you log in (no client id needed); tokens stay on this Mac.</p>
+        <div className="setting-row">
+          <div className="txt">
+            <b>{linAcct?.loggedIn ? `Signed in${linAcct.user ? ` as ${linAcct.user}` : ""}` : linAcct?.loginPending ? "Waiting for the browser…" : "Not signed in"}</b>
+            <span className={linAcct?.error ? "err-text" : ""}>{linAcct?.error || (linAcct?.loggedIn ? `Scopes: ${linAcct.scope || "—"}` : "Log in to let Linear projects find, comment on and close issues.")}</span>
+          </div>
+          {linAcct?.loggedIn ? (
+            <button className="btn sm" onClick={() => api.linearLogout().then(() => api.linearStatus().then(setLinAcct))}>Log out</button>
+          ) : (
+            <button className="btn sm primary" disabled={linAcct?.loginPending} onClick={linearLogin}>Log in</button>
+          )}
+        </div>
+        {linMsg && <div className="callout info"><span className="t">{linMsg}</span></div>}
+        <details>
+          <summary className="small muted" style={{ cursor: "pointer" }}>Advanced</summary>
+          <div className="grid3" style={{ marginTop: 10 }}>
+            <div className="field"><label>Redirect port</label><input className="input num-input" type="number" min={1024} max={65535} value={lin.redirectPort} onChange={(e) => updateLinear({ redirectPort: Number(e.target.value) || 47832 })} /></div>
+            <div className="field"><label>MCP URL</label><input className="input code" value={lin.mcpUrl} onChange={(e) => updateLinear({ mcpUrl: e.target.value })} /></div>
+            <div className="field"><label>Issuer</label><input className="input code" value={lin.issuer} onChange={(e) => updateLinear({ issuer: e.target.value })} /></div>
+          </div>
+          <div className="field"><label>Scopes</label><input className="input code" value={lin.scopes} onChange={(e) => updateLinear({ scopes: e.target.value })} /></div>
         </details>
       </div>
 

@@ -8,7 +8,7 @@ import "./styles.css";
 const SCREENS: { id: string; label: string; opts: DemoOptions }[] = [
   { id: "first-run", label: "First run", opts: { scenario: "empty" } },
   { id: "repo", label: "1 · Repository", opts: { scenario: "empty", view: "projects", editorNew: true, editorStep: 0 } },
-  { id: "jira", label: "2 · Jira", opts: { scenario: "empty", view: "projects", editorNew: true, editorStep: 1, jiraTested: true } },
+  { id: "jira", label: "2 · Tracker", opts: { scenario: "empty", view: "projects", editorNew: true, editorStep: 1, jiraTested: true } },
   { id: "mcp", label: "3 · MCP", opts: { scenario: "empty", view: "projects", editorNew: true, editorStep: 2 } },
   { id: "agents", label: "4 · Agents", opts: { scenario: "empty", view: "projects", editorNew: true, editorStep: 3 } },
   { id: "review", label: "5 · Review", opts: { scenario: "empty", view: "projects", editorNew: true, editorStep: 4 } },
