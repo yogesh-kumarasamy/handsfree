@@ -51,6 +51,9 @@ export interface Api {
   testJira(project: ProjectConfig): Promise<{ issues: FoundIssue[]; error?: string; raw?: string }>;
   repoInfo(path: string): Promise<RepoInfo>;
   doctor(): Promise<DoctorItem[]>;
+  /** Start a routine now (ignores its schedule). Rejects when it is already running. */
+  runRoutine(id: string): Promise<void>;
+  getRoutineLog(id: string): Promise<string>;
   subscribe(cb: (e: EngineEvent) => void): () => void;
 }
 
@@ -121,6 +124,8 @@ function createHttpApi(base: string, token: string): Api {
     testJira: (project) => call("/api/test-jira", "POST", { project }),
     repoInfo: (path) => call("/api/repo-info", "POST", { path }),
     doctor: () => call("/api/doctor"),
+    runRoutine: (id) => action(`/api/routines/${encodeURIComponent(id)}/run`, {}),
+    getRoutineLog: async (id) => (await call<{ log: string }>(`/api/routines/${encodeURIComponent(id)}/log`)).log,
     subscribe(cb) {
       let es: EventSource | undefined;
       let closed = false;

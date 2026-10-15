@@ -100,7 +100,25 @@ export function startServer(o: Orchestrator, port: number, token: string) {
         if (m[2] === "forget") o.forget(key);
         return send(200, {});
       }
+      const rm = url.pathname.match(/^\/api\/routines\/([^/]+)\/(run|log)$/);
+      if (rm) {
+        const id = decodeURIComponent(rm[1]);
+        if (rm[2] === "log") return send(200, { log: o.readRoutineLog(id) });
+        if (req.method !== "POST") return send(404, { error: "not found" });
+        // Answer once the run has started; its progress and result arrive through state events.
+        const why = o.routines.cannotRun(id);
+        if (why) return send(400, { error: why });
+        void o.routines.runNow(id).catch(() => undefined);
+        return send(200, {});
+      }
       switch (`${req.method} ${url.pathname}`) {
+        case "POST /api/routines/tick": {
+          // Test-only: run due routines now (optionally as of a given instant) instead of waiting for the 30 s tick.
+          if (process.env.HF_TEST !== "1") return send(404, { error: "not found" });
+          const { now } = await body<{ now?: string }>();
+          await o.routines.tick(now ? new Date(now) : undefined);
+          return send(200, {});
+        }
         case "GET /api/config":
           return send(200, o.config);
         case "PUT /api/config":

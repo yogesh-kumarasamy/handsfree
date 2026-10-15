@@ -97,10 +97,17 @@ export class RoutineService {
     await Promise.all(runs);
   }
 
+  /** Why `runNow(id)` would be refused, or undefined when it can start. */
+  cannotRun(id: string): string | undefined {
+    if (!this.all().some(({ r }) => r.id === id)) return "Unknown routine";
+    if (this.running.has(id)) return "This routine is already running.";
+    return undefined;
+  }
+
   async runNow(id: string) {
-    const hit = this.all().find(({ r }) => r.id === id);
-    if (!hit) throw new Error("Unknown routine");
-    if (this.running.has(id)) throw new Error("This routine is already running.");
+    const why = this.cannotRun(id);
+    if (why) throw new Error(why);
+    const hit = this.all().find(({ r }) => r.id === id)!;
     await this.execute(hit.p, hit.r, this.now());
   }
 
