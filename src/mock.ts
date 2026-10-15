@@ -1,6 +1,9 @@
 import type { Api, DemoOptions } from "./api";
 import {
   AGENT_PRESETS,
+  DEFAULT_AGENT_MESSAGE_COMMAND,
+  DEFAULT_SETMORE_ACCOUNT,
+  DEFAULT_TEMPLATES,
   PR_STATUSES,
   DEFAULT_JIRA_COMMENT,
   DEFAULT_JIRA_SEARCH,
@@ -25,6 +28,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
     settings: {
       pollIntervalMin: 15,
       prPollIntervalMin: 3,
+      accounts: { setmore: { ...DEFAULT_SETMORE_ACCOUNT, clientId: "hf-demo" } },
       maxParallel: 3,
       agentTimeoutMin: 90,
       slowAfterMin: 30,
@@ -62,6 +66,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
               ciAutoFix: true,
               ciFixMaxRounds: 2,
               mergeNudgeAfterMin: 30,
+              messaging: { platform: "setmore", channelId: "nN0pGzAWVcudEnhemVADfwCZi6iUlMiW", channelName: "ChatSupport Team Core", templates: { ...DEFAULT_TEMPLATES }, agentCommand: DEFAULT_AGENT_MESSAGE_COMMAND },
             },
             {
               id: "p2",
@@ -80,6 +85,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
               ciAutoFix: true,
               ciFixMaxRounds: 2,
               mergeNudgeAfterMin: 30,
+              messaging: { platform: "none", channelId: "", channelName: "", templates: { ...DEFAULT_TEMPLATES }, agentCommand: DEFAULT_AGENT_MESSAGE_COMMAND },
             },
           ],
   };
@@ -113,7 +119,7 @@ const pr = (number: number, repo: string, over: Partial<PrInfo> = {}): PrInfo =>
 });
 
 function demoState(scenario: DemoOptions["scenario"]): EngineState {
-  if (scenario === "empty") return { tickets: {}, pollErrors: {}, prCheckErrors: {} };
+  if (scenario === "empty") return { tickets: {}, pollErrors: {}, prCheckErrors: {}, accounts: { setmore: { loggedIn: false } } };
   const list: Ticket[] = [
     t({
       key: "CSW-1421",
@@ -237,6 +243,7 @@ function demoState(scenario: DemoOptions["scenario"]): EngineState {
     nextPollAt: new Date(Date.now() + 9 * 60_000).toISOString(),
     pollErrors: {},
     prCheckErrors: {},
+    accounts: { setmore: { loggedIn: true, user: "yogesh@anywhere.co" } },
   };
 }
 

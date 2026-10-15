@@ -1,7 +1,17 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CLAUDE_RESUME, type Config, type EngineState, type ProjectConfig, type Settings } from "./types";
+import {
+  CLAUDE_RESUME,
+  DEFAULT_AGENT_MESSAGE_COMMAND,
+  DEFAULT_SETMORE_ACCOUNT,
+  DEFAULT_TEMPLATES,
+  type Config,
+  type EngineState,
+  type MessagingConfig,
+  type ProjectConfig,
+  type Settings,
+} from "./types";
 
 export const DATA_DIR =
   process.env.HF_DATA ||
@@ -24,7 +34,27 @@ export const DEFAULT_SETTINGS: Settings = {
   paused: false,
   notifications: true,
   launchAtLogin: false,
+  accounts: { setmore: { ...DEFAULT_SETMORE_ACCOUNT } },
 };
+
+export function normalizeSettings(raw: Partial<Settings> | undefined): Settings {
+  const s = { ...DEFAULT_SETTINGS, ...(raw || {}) };
+  s.accounts = { setmore: { ...DEFAULT_SETMORE_ACCOUNT, ...(raw?.accounts?.setmore || {}) } };
+  s.accounts.setmore.redirectPort = clamp(s.accounts.setmore.redirectPort, 1024, 65535, DEFAULT_SETMORE_ACCOUNT.redirectPort);
+  s.prPollIntervalMin = clamp(s.prPollIntervalMin, 1, 60, DEFAULT_SETTINGS.prPollIntervalMin);
+  return s;
+}
+
+export function normalizeMessaging(m: Partial<MessagingConfig> | undefined): MessagingConfig {
+  const platform = m?.platform === "setmore" || m?.platform === "agent" ? m.platform : "none";
+  return {
+    platform,
+    channelId: m?.channelId || "",
+    channelName: m?.channelName || "",
+    templates: { ...DEFAULT_TEMPLATES, ...(m?.templates || {}) },
+    agentCommand: m?.agentCommand ?? DEFAULT_AGENT_MESSAGE_COMMAND,
+  };
+}
 
 function readJson<T>(file: string): T | undefined {
   try {
@@ -67,6 +97,7 @@ export function normalizeProject(p: Partial<ProjectConfig>): ProjectConfig {
     ciAutoFix: p.ciAutoFix ?? true,
     ciFixMaxRounds: clamp(p.ciFixMaxRounds, 0, 5, 2),
     mergeNudgeAfterMin: clamp(p.mergeNudgeAfterMin, 5, 1440, 30),
+    messaging: normalizeMessaging(p.messaging),
   };
 }
 
@@ -79,7 +110,7 @@ export function loadConfig(): Config {
   const raw = readJson<Partial<Config>>(CONFIG_FILE);
   return {
     version: 1,
-    settings: { ...DEFAULT_SETTINGS, ...(raw?.settings || {}) },
+    settings: normalizeSettings(raw?.settings),
     projects: (raw?.projects || []).map(normalizeProject),
   };
 }
@@ -106,6 +137,7 @@ export function migrateState(raw: Partial<EngineState> | undefined, cfg: Config)
     nextPollAt: raw?.nextPollAt,
     lastPrCheckAt: raw?.lastPrCheckAt,
     nextPrCheckAt: raw?.nextPrCheckAt,
+    accounts: { setmore: raw?.accounts?.setmore || { loggedIn: false } },
   };
 }
 

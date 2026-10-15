@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import {
   AGENT_PRESETS,
+  DEFAULT_AGENT_MESSAGE_COMMAND,
+  DEFAULT_TEMPLATES,
   DEFAULT_EXHAUSTION_PATTERNS,
   DEFAULT_JIRA_COMMENT,
   DEFAULT_JIRA_SEARCH,
@@ -32,6 +34,7 @@ function blankProject(): ProjectConfig {
     ciAutoFix: true,
     ciFixMaxRounds: 2,
     mergeNudgeAfterMin: 30,
+    messaging: { platform: "none", channelId: "", channelName: "", templates: { ...DEFAULT_TEMPLATES }, agentCommand: DEFAULT_AGENT_MESSAGE_COMMAND },
   };
 }
 

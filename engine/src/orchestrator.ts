@@ -7,7 +7,7 @@ import { commentOnIssue, searchIssues } from "./jira";
 import { PrEvents } from "./prevents";
 import { buildFixPrompt, mergeNudgeDue, nextStatus, shouldAutoFix, toPrInfo, type RawPr } from "./prstate";
 import { exec, fill, q, SHELL, start, type Running } from "./shell";
-import { loadConfig, loadState, logFile, normalizeProject, saveConfig, saveState } from "./store";
+import { loadConfig, loadState, logFile, normalizeProject, normalizeSettings, saveConfig, saveState } from "./store";
 import {
   CLAUDE_RESUME,
   PR_STATUSES,
@@ -106,7 +106,7 @@ export class Orchestrator {
     const wasPaused = this.config.settings.paused;
     this.config = {
       version: 1,
-      settings: { ...this.config.settings, ...next.settings },
+      settings: normalizeSettings({ ...this.config.settings, ...next.settings }),
       projects: (next.projects || []).map(normalizeProject),
     };
     saveConfig(this.config);
