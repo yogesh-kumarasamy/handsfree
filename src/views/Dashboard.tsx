@@ -319,6 +319,9 @@ export function Dashboard({
               )}
             </div>
           )}
+
+          {/* Routines */}
+          <RoutinesCard api={api} config={config} state={state} />
         </div>
 
         {sel && <TicketDetail api={api} ticket={sel} project={projects[sel.projectId]} prError={state.prCheckErrors?.[sel.key]} onCompose={openCompose} onClose={() => setSelected(undefined)} />}
@@ -605,6 +608,69 @@ function FirstRun({ onNewProject }: { onNewProject: () => void }) {
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Scheduled agent runs across projects: next/last run, Run now, and the routine's log inline. */
+function RoutinesCard({ api, config, state }: { api: Api; config: Config; state: EngineState }) {
+  const rows = config.projects.flatMap((p) => p.routines.filter((r) => r.enabled).map((r) => ({ p, r })));
+  const [open, setOpen] = useState<string>();
+  const [log, setLog] = useState("");
+  const [error, setError] = useState<{ id: string; text: string }>();
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    api.getRoutineLog(open).then((l) => live && setLog(l)).catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [open, state]);
+  if (rows.length === 0) return null;
+  const run = async (id: string) => {
+    setError(undefined);
+    await api.runRoutine(id).catch((e) => setError({ id, text: String((e as Error).message || e) }));
+  };
+  return (
+    <div className="card section-card" style={{ overflow: "hidden" }}>
+      <div className="section-head"><div className="card-title" style={{ margin: 0 }}>Routines</div><span className="count">{rows.length}</span></div>
+      <div className="table-wrap">
+        <table className="tickets">
+          <thead><tr><th>Routine</th><th>Next run</th><th>Last run</th><th /></tr></thead>
+          <tbody>
+            {rows.map(({ p, r }) => {
+              const st = state.routines?.[r.id];
+              const last = st?.last;
+              return (
+                <tr key={r.id}>
+                  <td><div className="key">{r.name}</div><div className="summary small muted">{p.name}</div></td>
+                  <td className="small muted">{until(st?.nextRunAt)}</td>
+                  <td className="small">
+                    {st?.running ? (
+                      <span className="pill wait">running</span>
+                    ) : last ? (
+                      <span title={last.output || ""}>
+                        <span className={`pill ${last.ok ? "ok" : "bad"}`}>{last.ok ? "ok" : "failed"}</span> <span className="muted">{ago(last.startedAt)}</span>
+                        {last.ok && last.postError && <span className="err-text"> · not posted</span>}
+                      </span>
+                    ) : (
+                      <span className="muted">never</span>
+                    )}
+                    {error?.id === r.id && <div className="err-text">{error.text}</div>}
+                  </td>
+                  <td>
+                    <div className="row" style={{ justifyContent: "flex-end" }}>
+                      <button className="btn sm" disabled={st?.running} onClick={() => run(r.id)}>Run now</button>
+                      <button className="btn sm ghost" onClick={() => setOpen(open === r.id ? undefined : r.id)}>{open === r.id ? "Hide log" : "Log"}</button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {open && <pre className="log" style={{ margin: "0 14px 14px" }}>{log || "No runs yet."}</pre>}
     </div>
   );
 }

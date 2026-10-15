@@ -60,6 +60,18 @@ Other commands: `npm run test:engine` (engine e2e test), `npm run engine` (engin
 
 Agents are told to commit but not push. HandsFree commits anything left uncommitted, pushes `handsfree/<KEY>`, opens the PR with `gh`, and comments the link on the ticket. Jira status is never changed.
 
+### Routines
+
+A routine is a scheduled agent run for a project: a cron schedule (5 fields, local time), a prompt and an agent command. HandsFree runs it unattended in the project's repo and posts the agent's final text to the project's collab channel (Messaging step). Without a messaging platform the result stays in HandsFree.
+
+- **Projects → Routines** step: **+ Add routine** gives two presets or a custom one.
+  - **Daily PR check** (`0 10 * * 1-5`, weekdays 10:00): open PRs of the repo from `gh pr list`, grouped into awaiting review, changes requested, approved not merged, failing CI, drafts and stale.
+  - **Sentry check** (`0 9,13,17 * * *`): new or regressed Sentry issues since the last successful run. It uses your claude.ai **Sentry connector** in Claude Code. Authenticate it once: run `claude`, type `/mcp`, pick Sentry and log in.
+- Prompt placeholders: `{project}` `{repo}` (owner/name from the remote) `{repo_path}` `{channel}` `{last_run}` `{now}`.
+- The default command is `claude -p {prompt} --output-format json --max-turns 25 --dangerously-skip-permissions`. The agent can run any command in the repo, the same trust as the coding agents. A custom command must print Claude's JSON result envelope.
+- **Run now** on the routine (project step or the dashboard's *Routines* card) ignores the schedule. The card shows the next run, the last result and the routine's **Log**.
+- One run at a time per routine (a slot that comes while the previous run is still going is skipped) and at most two routines at once. A Mac that slept through a slot runs it once on wake. Timeout per routine (default 15 min). A failed run or post sends a notification.
+
 ### Watch or step in (any agent)
 
 Every ticket has one **Open** button:
@@ -98,6 +110,7 @@ Agents also get `HANDSFREE=1`, `HANDSFREE_ISSUE=<KEY>` and `CI=1` in their envir
 
 - Config, state and per-ticket logs: `~/Library/Application Support/HandsFree/`
 - Engine log: `~/Library/Logs/HandsFree/engine.log`
+- Routine logs: `~/Library/Application Support/HandsFree/logs/routine-<id>.log`
 - Worktrees: `<repo>/.worktrees/<KEY>`. `.worktrees/` and `.handsfree/` are added to the repo's `.git/info/exclude`, so your checkout stays clean.
 - Setmore login: `~/Library/Application Support/HandsFree/auth/setmore.json` (mode 600; never sent anywhere but Setmore).
 
