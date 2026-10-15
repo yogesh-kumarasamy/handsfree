@@ -48,7 +48,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
               repoPath: "/Users/yogesh/code/chatsupport-web",
               baseBranch: "main",
               remote: "origin",
-              tracker: { kind: "jira", query: 'project = CSW AND assignee = currentUser() AND status = "To Do" ORDER BY priority DESC', searchCommand: DEFAULT_JIRA_SEARCH, commentCommand: DEFAULT_JIRA_COMMENT, transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me" },
+              tracker: { kind: "jira", query: 'project = CSW AND assignee = currentUser() AND status = "To Do" ORDER BY priority DESC', searchCommand: DEFAULT_JIRA_SEARCH, commentCommand: DEFAULT_JIRA_COMMENT, transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo" },
               mcpJson: JSON.stringify(
                 {
                   mcpServers: {
@@ -74,7 +74,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
               repoPath: "/Users/yogesh/code/setmore-api",
               baseBranch: "develop",
               remote: "origin",
-              tracker: { kind: "jira", query: "project = SET AND assignee = currentUser() AND labels = handsfree", searchCommand: DEFAULT_JIRA_SEARCH, commentCommand: DEFAULT_JIRA_COMMENT, transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me" },
+              tracker: { kind: "jira", query: "project = SET AND assignee = currentUser() AND labels = handsfree", searchCommand: DEFAULT_JIRA_SEARCH, commentCommand: DEFAULT_JIRA_COMMENT, transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo" },
               mcpJson: '{\n  "mcpServers": {}\n}',
               agents: agents(["Grok", "Claude Code"]),
               promptExtra: "",

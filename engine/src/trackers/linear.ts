@@ -64,8 +64,8 @@ function has(schema: Schema, name: string) {
   return !schema?.properties || name in schema.properties;
 }
 
-function toIssues(j: any): FoundIssue[] {
-  const list: any[] = Array.isArray(j)
+function issueList(j: any): any[] {
+  return Array.isArray(j)
     ? j
     : Array.isArray(j?.issues)
       ? j.issues
@@ -78,9 +78,31 @@ function toIssues(j: any): FoundIssue[] {
             : Array.isArray(j?.issues?.nodes)
               ? j.issues.nodes
               : [];
+}
+
+const CLOSED_TYPES = ["completed", "canceled", "cancelled"];
+
+/** An issue's status name, whichever shape the server uses. */
+function stateName(i: any): string | undefined {
+  const v = i?.state?.name ?? i?.status?.name ?? i?.state ?? i?.status;
+  return typeof v === "string" ? v : undefined;
+}
+
+/**
+ * Raw issues → FoundIssue. Always drops archived, completed/canceled and already-done issues, whatever the server did
+ * with the filters; with `states`, keeps only issues in one of them (issues without a status name are kept).
+ */
+function toIssues(raw: any[], o: { doneStatus: string; states: string[] }): FoundIssue[] {
+  const done = o.doneStatus.trim().toLowerCase();
+  const wanted = o.states.map((x) => x.toLowerCase());
   const out: FoundIssue[] = [];
-  for (const i of list) {
+  for (const i of raw) {
     if (!i || typeof i.identifier !== "string") continue;
+    if (i.archivedAt) continue;
+    if (typeof i.state?.type === "string" && CLOSED_TYPES.includes(i.state.type.toLowerCase())) continue;
+    const name = stateName(i)?.toLowerCase();
+    if (name && done && name === done) continue;
+    if (name && wanted.length && !wanted.includes(name)) continue;
     const issue: FoundIssue = { key: i.identifier, summary: String(i.title ?? "") };
     if (typeof i.description === "string" && i.description.trim()) issue.description = i.description;
     issue.id = typeof i.id === "string" || typeof i.id === "number" ? String(i.id) : i.identifier;
@@ -89,6 +111,8 @@ function toIssues(j: any): FoundIssue[] {
   }
   return out;
 }
+
+const MAX_ISSUES = 50;
 
 export class LinearTracker implements TrackerAdapter {
   readonly kind = "linear" as const;
@@ -108,22 +132,40 @@ export class LinearTracker implements TrackerAdapter {
   }
 
   async search(): Promise<FoundIssue[]> {
-    const tools = await this.conn.tools();
     const t = this.p.tracker;
     const query = t.query.trim();
+    const states = (t.linearState || "").split(",").map((x) => x.trim()).filter(Boolean);
+    // Without either, every issue assigned to you (in any status) would be picked up.
+    if (!query && !states.length) throw new Error("Set a status or a filter for Linear so HandsFree doesn't pick up every issue assigned to you.");
+    const keep = { doneStatus: t.doneStatus, states };
+    const tools = await this.conn.tools();
     if (tools.has("list_issues")) {
       const s = tools.get("list_issues");
-      const args: Record<string, unknown> = {};
-      if (t.linearAssignee.trim() && has(s, "assignee")) args.assignee = t.linearAssignee.trim();
-      if (query && has(s, "query")) args.query = query;
-      if (has(s, "limit")) args.limit = 50;
-      const found = toIssues(toolJson(await this.conn.mcp.callTool("list_issues", args)));
-      return query && !("query" in args) ? filterText(found, query) : found;
+      const base: Record<string, unknown> = {};
+      if (t.linearAssignee.trim() && has(s, "assignee")) base.assignee = t.linearAssignee.trim();
+      const stateArg = states.length ? argName(s, ["state", "status", "stateName"]) : undefined;
+      if (s?.properties && "includeArchived" in s.properties) base.includeArchived = false;
+      if (query && has(s, "query")) base.query = query;
+      if (has(s, "limit")) base.limit = MAX_ISSUES;
+      // One value per call unless the schema takes a list.
+      const stateType = stateArg ? (s?.properties?.[stateArg] as { type?: string } | undefined)?.type : undefined;
+      const calls: Record<string, unknown>[] = !stateArg
+        ? [base]
+        : stateType === "array"
+          ? [{ ...withState(base, stateArg, states) }]
+          : states.map((st) => withState(base, stateArg, st));
+      const seen = new Map<string, FoundIssue>();
+      for (const args of calls) {
+        for (const i of toIssues(issueList(toolJson(await this.conn.mcp.callTool("list_issues", args))), keep)) if (!seen.has(i.key)) seen.set(i.key, i);
+        if (seen.size >= MAX_ISSUES) break;
+      }
+      const found = [...seen.values()].slice(0, MAX_ISSUES);
+      return query && !("query" in base) ? filterText(found, query) : found;
     }
     if (tools.has("list_my_issues")) {
-      const args: Record<string, unknown> = has(tools.get("list_my_issues"), "limit") ? { limit: 50 } : {};
+      const args: Record<string, unknown> = has(tools.get("list_my_issues"), "limit") ? { limit: MAX_ISSUES } : {};
       // This tool takes no text filter: apply the project's filter here.
-      return filterText(toIssues(toolJson(await this.conn.mcp.callTool("list_my_issues", args))), query);
+      return filterText(toIssues(issueList(toolJson(await this.conn.mcp.callTool("list_my_issues", args))), keep), query);
     }
     throw new McpError("The Linear MCP server has no list_issues tool.");
   }
@@ -161,6 +203,17 @@ export class LinearTracker implements TrackerAdapter {
     await this.conn.mcp.callTool("update_issue", { [idArg]: t.trackerId || t.key, [stateArg]: status });
     return { skipped: false };
   }
+}
+
+/** `base` with the status argument inserted after the assignee (keeps argument order readable in logs). */
+function withState(base: Record<string, unknown>, arg: string, value: unknown) {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(base)) {
+    out[k] = v;
+    if (k === "assignee") out[arg] = value;
+  }
+  if (!(arg in out)) out[arg] = value;
+  return out;
 }
 
 function filterText(list: FoundIssue[], query: string) {

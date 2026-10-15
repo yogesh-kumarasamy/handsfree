@@ -93,6 +93,7 @@ export function normalizeTracker(p: Partial<ProjectConfig> & LegacyJiraFields): 
       doneStatus: "Done",
       repo: "",
       linearAssignee: "me",
+      linearState: "Todo",
     };
   }
   const kind: TrackerKind = t.kind === "github" || t.kind === "linear" ? t.kind : "jira";
@@ -105,6 +106,7 @@ export function normalizeTracker(p: Partial<ProjectConfig> & LegacyJiraFields): 
     doneStatus: t.doneStatus ?? DEFAULT_DONE_STATUS[kind],
     repo: t.repo || "",
     linearAssignee: t.linearAssignee ?? "me",
+    linearState: t.linearState ?? "Todo",
   };
 }
 

@@ -95,7 +95,18 @@ const linText = (o) => ({ content: [{ type: "text", text: JSON.stringify(o) }] }
 const linMcp = await startFakeMcp({
   validTokens: linTokens,
   tools: {
-    list_issues: { inputSchema: { properties: { assignee: {}, query: {}, limit: {} } }, handler: () => linText({ issues: [{ id: "uuid-1", identifier: "ENG-7", title: "Add greeting", description: "Say hi", url: "https://linear.app/x/ENG-7" }] }) },
+    // Answers with every assigned issue, done and archived ones included: HandsFree must drop those itself.
+    list_issues: {
+      inputSchema: { properties: { assignee: {}, state: { type: "string" }, query: {}, limit: {} } },
+      handler: () =>
+        linText({
+          issues: [
+            { id: "uuid-1", identifier: "ENG-7", title: "Add greeting", description: "Say hi", url: "https://linear.app/x/ENG-7", state: { name: "Todo", type: "unstarted" } },
+            { id: "uuid-0", identifier: "ENG-6", title: "Shipped long ago", state: { name: "Done", type: "completed" } },
+            { id: "uuid-9", identifier: "ENG-9", title: "Archived", state: { name: "Todo", type: "unstarted" }, archivedAt: "2026-01-01T00:00:00Z" },
+          ],
+        }),
+    },
     create_comment: { inputSchema: { properties: { issueId: {}, body: {} } }, handler: (a) => linText({ ok: true, got: a }) },
     update_issue: { inputSchema: { properties: { id: {}, state: {} } }, handler: (a) => linText({ ok: true, got: a }) },
   },
@@ -547,7 +558,7 @@ try {
   assert.match((await api(`/api/tickets/${encodeURIComponent("repo#5")}/log`)).log, /Moved the GitHub issue to “closed”/);
 
   // ---- A Linear project: not logged in → poll error; log in (dynamic registration); pick-up, comment, update_issue on merge
-  const linProject = { ...ghProject, id: "p3", name: "Lin", tracker: { kind: "linear", query: "", searchCommand: "", commentCommand: "", transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me" } };
+  const linProject = { ...ghProject, id: "p3", name: "Lin", tracker: { kind: "linear", query: "", searchCommand: "", commentCommand: "", transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo" } };
   const cfgL = await api("/api/config");
   await api("/api/config", "PUT", { ...cfgL, settings: { ...cfgL.settings, accounts: { ...cfgL.settings.accounts, linear: { mcpUrl: linMcp.url, issuer: linAuth.issuer, redirectPort: cbPort + 1, scopes: "read write" } } }, projects: [project, ghProject, linProject] });
   assert.equal((await api("/api/accounts/linear")).loggedIn, false);
@@ -572,7 +583,9 @@ try {
   const comment = linMcp.calls.find((c) => c.params?.name === "create_comment").params.arguments;
   assert.equal(comment.issueId, "uuid-1");
   assert.match(comment.body, new RegExp(`Linear issue: ${linT.prUrl}`));
-  assert.deepEqual(linMcp.calls.find((c) => c.params?.name === "list_issues").params.arguments, { assignee: "me", limit: 50 });
+  assert.deepEqual(linMcp.calls.find((c) => c.params?.name === "list_issues").params.arguments, { assignee: "me", state: "Todo", limit: 50 });
+  const linState = await api("/api/state");
+  assert.ok(!linState.tickets["ENG-6"] && !linState.tickets["ENG-9"], "done and archived Linear issues are not picked up");
   const linPrN = Number(linT.prUrl.split("/").pop());
   prJson(linPrN, { state: "MERGED", isDraft: false, mergedAt: "2026-10-15T12:00:00Z" });
   await checkPrs();

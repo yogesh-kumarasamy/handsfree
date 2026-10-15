@@ -35,7 +35,7 @@ test("empty file gives an empty state", () => {
 
 test("normalizeProject: legacy Jira fields migrate into tracker", () => {
   const p = normalizeProject({ id: "p", name: "P", jql: "project = X", jiraSearchCommand: "acli custom {jql}", jiraCommentCommand: "-" });
-  assert.deepEqual(p.tracker, { kind: "jira", query: "project = X", searchCommand: "acli custom {jql}", commentCommand: "-", transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me" });
+  assert.deepEqual(p.tracker, { kind: "jira", query: "project = X", searchCommand: "acli custom {jql}", commentCommand: "-", transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo" });
   assert.equal("jql" in p, false);
 });
 
@@ -48,6 +48,8 @@ test("normalizeProject: a legacy empty Jira comment command keeps meaning 'never
 test("normalizeProject: tracker defaults per kind; unknown kind falls back to jira", () => {
   assert.equal(normalizeProject({ tracker: { kind: "github", query: "label:hf" } }).tracker.doneStatus, "closed");
   assert.equal(normalizeProject({ tracker: { kind: "linear" } }).tracker.doneStatus, "Done");
+  assert.equal(normalizeProject({ tracker: { kind: "linear" } }).tracker.linearState, "Todo");
+  assert.equal(normalizeProject({ tracker: { kind: "linear", linearState: "" } }).tracker.linearState, "", "an explicitly empty status stays empty");
   assert.equal(normalizeProject({ tracker: { kind: "nope" } }).tracker.kind, "jira");
 });
 

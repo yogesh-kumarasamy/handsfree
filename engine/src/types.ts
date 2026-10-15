@@ -174,6 +174,8 @@ export interface TrackerConfig {
   repo: string;
   /** Linear only: "me" (default), a name/email, or "" for no assignee filter. */
   linearAssignee: string;
+  /** Linear only: pick up issues in these statuses (comma-separated names, default "Todo"). */
+  linearState: string;
 }
 
 export interface LinearAccountSettings {

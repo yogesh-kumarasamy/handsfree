@@ -45,6 +45,7 @@ function blankProject(): ProjectConfig {
       doneStatus: "Done",
       repo: "",
       linearAssignee: "me",
+      linearState: "Todo",
     },
     mcpJson: '{\n  "mcpServers": {}\n}',
     agents: AGENT_PRESETS.map((a) => ({ ...a, id: uid(), exhaustionPatterns: [...a.exhaustionPatterns] })),
@@ -273,6 +274,7 @@ function ProjectEditor({
     !p.repoPath && "Choose a repository",
     repo && !repo.ok && "The folder isn't a git repository",
     p.tracker.kind !== "linear" && !p.tracker.query.trim() && (p.tracker.kind === "jira" ? "Add a JQL" : "Add a tracker query"),
+    p.tracker.kind === "linear" && !p.tracker.query.trim() && !p.tracker.linearState.trim() && "Set a Linear status or a text filter",
     mcpError && "MCP JSON is invalid",
     enabledAgents.length === 0 && "Enable at least one agent with a command",
     p.messaging.platform !== "none" && !p.messaging.channelId && "Pick a collab channel (Messaging step)",
@@ -418,6 +420,13 @@ function ProjectEditor({
                   <label>Assignee</label>
                   <input className="input code" value={tk.linearAssignee} placeholder="me" onChange={(e) => setTracker({ linearAssignee: e.target.value })} />
                   <span className="hint"><span className="mono">me</span>, a name or email · empty = anyone.</span>
+                </div>
+              )}
+              {tk.kind === "linear" && (
+                <div className="field">
+                  <label>Pick up issues in status</label>
+                  <input className="input code" value={tk.linearState} placeholder="Todo" onChange={(e) => setTracker({ linearState: e.target.value })} />
+                  <span className="hint">Comma-separated names allowed, e.g. <span className="mono">Todo, Backlog</span>. Done, canceled and archived issues are never picked up.</span>
                 </div>
               )}
             </div>
@@ -639,7 +648,7 @@ function ProjectEditor({
               <dt>Name</dt><dd>{p.name || <span className="err-text">missing</span>}</dd>
               <dt>Repository</dt><dd className="mono">{p.repoPath || <span className="err-text">missing</span>}</dd>
               <dt>Base / remote</dt><dd className="mono">{p.baseBranch} · {p.remote}</dd>
-              <dt>Tracker</dt><dd>{TRACKER_LABEL[p.tracker.kind]}{p.tracker.kind === "github" ? ` · ${p.tracker.repo || `repo from ${p.remote}`}` : p.tracker.kind === "linear" ? ` · assignee ${p.tracker.linearAssignee || "anyone"}` : ""}</dd>
+              <dt>Tracker</dt><dd>{TRACKER_LABEL[p.tracker.kind]}{p.tracker.kind === "github" ? ` · ${p.tracker.repo || `repo from ${p.remote}`}` : p.tracker.kind === "linear" ? ` · assignee ${p.tracker.linearAssignee || "anyone"} · status ${p.tracker.linearState || "any"}` : ""}</dd>
               <dt>Query</dt><dd className="mono">{p.tracker.query || <span className="muted">none</span>}</dd>
               <dt>On merge</dt><dd>{p.tracker.doneStatus.trim() ? (p.tracker.kind === "github" ? "Issue closed as completed" : `Moved to “${p.tracker.doneStatus}”`) : "Ticket status left as is"}</dd>
               <dt>MCP servers</dt><dd>{mcpError ? <span className="err-text">invalid JSON</span> : mcpServers.join(", ") || "none"}</dd>
