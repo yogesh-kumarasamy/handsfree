@@ -197,8 +197,14 @@ export class Orchestrator {
     this.prTimer = setTimeout(() => void this.checkPrs(), ms);
   }
 
+  private recheckPrs = false;
+
   async checkPrs() {
-    if (this.checkingPrs) return;
+    // A check requested while one is running (Check PRs now, a fresh PR) must not be dropped: run again right after.
+    if (this.checkingPrs) {
+      this.recheckPrs = true;
+      return;
+    }
     this.checkingPrs = true;
     try {
       for (const t of Object.values(this.state.tickets)) {
@@ -209,7 +215,12 @@ export class Orchestrator {
       this.state.lastPrCheckAt = now();
     } finally {
       this.checkingPrs = false;
-      this.schedulePrCheck();
+      if (this.recheckPrs) {
+        this.recheckPrs = false;
+        this.schedulePrCheck(200);
+      } else {
+        this.schedulePrCheck();
+      }
       this.pump();
     }
   }

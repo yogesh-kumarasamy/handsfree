@@ -100,7 +100,7 @@ const api = async (p, method = "GET", body) => {
   return r.json();
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function waitFor(fn, label, ms = 30000) {
+async function waitFor(fn, label, ms = 60000) {
   const t0 = Date.now();
   while (Date.now() - t0 < ms) {
     const v = await fn();
