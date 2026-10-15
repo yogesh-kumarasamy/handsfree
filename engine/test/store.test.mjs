@@ -78,3 +78,18 @@ test("normalizeProject: tracker defaults per kind; unknown kind falls back to ji
 test("migrateState: accounts.linear defaults to logged out", () => {
   assert.deepEqual(migrateState({ tickets: {} }, { version: 1, settings: {}, projects: [] }).accounts.linear, { loggedIn: false });
 });
+
+test("normalizeProject: the old Claude preset command is upgraded to the stream-json input form", () => {
+  const old = "claude -p {prompt} --mcp-config {mcp_file} --output-format stream-json --verbose --dangerously-skip-permissions";
+  const p = normalizeProject({ id: "p1", agents: [{ id: "a", name: "Claude Code", command: old }] });
+  assert.equal(
+    p.agents[0].command,
+    "claude -p --input-format stream-json --output-format stream-json --verbose --mcp-config {mcp_file} --dangerously-skip-permissions",
+  );
+});
+
+test("normalizeProject: a customised Claude command is left alone", () => {
+  const custom = "claude -p {prompt} --model opus --output-format stream-json --verbose";
+  const p = normalizeProject({ id: "p1", agents: [{ id: "a", name: "Claude Code", command: custom }] });
+  assert.equal(p.agents[0].command, custom);
+});

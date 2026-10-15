@@ -41,6 +41,8 @@ export interface Api {
   checkPrsNow(): Promise<void>;
   /** Send one ticket's collab message (template-filled unless `text` is given). */
   sendMessage(key: string, text?: string): Promise<MessageRecord>;
+  /** Message the agent working on this ticket without stopping it (agents with stream-json input only). */
+  feedback(key: string, text: string): Promise<void>;
   sendBulk(keys: string[], text?: string): Promise<{ sent: MessageRecord[]; failed: { key: string; error: string }[] }>;
   testMessage(project: ProjectConfig): Promise<{ ok: boolean; error?: string }>;
   listChannels(project: ProjectConfig, query?: string): Promise<{ channels: { id: string; name: string }[]; error?: string }>;
@@ -119,6 +121,7 @@ function createHttpApi(base: string, token: string): Api {
     fixCi: (k) => action(`/api/tickets/${encodeURIComponent(k)}/fix-ci`, {}),
     checkPrsNow: () => call("/api/check-prs-now", "POST"),
     sendMessage: (k, text) => action(`/api/tickets/${encodeURIComponent(k)}/message`, { text }),
+    feedback: (k, text) => action(`/api/tickets/${encodeURIComponent(k)}/feedback`, { text }),
     sendBulk: (keys, text) => call("/api/messages/bulk", "POST", { keys, text }),
     testMessage: (project) => call("/api/messaging/test", "POST", { project }),
     listChannels: (project, query) => call("/api/messaging/channels", "POST", { project, query }),

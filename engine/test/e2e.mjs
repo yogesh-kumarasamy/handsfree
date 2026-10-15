@@ -60,6 +60,18 @@ script("fakeslow", `echo "SESSION: abc-12345678"; echo "thinking…"; sleep 60`)
 script("fakemsg", `echo "$@" >> "${root}/msg.log"; echo '{"type":"result","is_error":false,"result":"ok\\n{\\"sent\\": true, \\"id\\": \\"agent-1\\"}"}'`);
 // routine agent fake: records its prompt, optionally slow, prints Claude's JSON envelope with a known report
 script("fakeroutine", `echo "$@" >> "${root}/routine.log"; if [ -f "${root}/ROUTINE_SLOW" ]; then sleep 3; fi; echo '{"type":"result","is_error":false,"result":"Open PRs: 2 — 1 awaiting review, 1 draft"}'`);
+// a Claude-style agent with stream-json input: the prompt is the first stdin line, later lines are your messages
+script("fakechat", `
+read -r first
+echo "$first" | grep -q '"type":"user"' || exit 7
+echo "$first" | grep -q 'DEMO-2' || exit 6
+echo "prompt received"
+while read -r line; do
+  text=$(echo "$line" | sed -E 's/.*"content":"([^"]*)".*/\\1/')
+  echo "agent heard: $text"
+  echo '{"type":"result","subtype":"success","is_error":false,"num_turns":2,"result":"Summary: nothing to change"}'
+done
+exit 0`);
 // agent 1: edits a file, then dies on a rate limit
 script("fakegrok", `echo "working on $HANDSFREE_ISSUE"; echo "partial" > partial.txt; echo "Error: 429 rate limit exceeded" >&2; exit 1`);
 // agent 2: sees the previous work, commits
@@ -521,6 +533,30 @@ try {
   await api("/api/tickets/DEMO-2/forget", "POST");
   await api("/api/poll-now", "POST");
   await waitFor(async () => (await api("/api/state")).tickets["DEMO-2"]?.status === "failed", "DEMO-2 failed");
+
+  // ---- Mid-run feedback: an agent with stream-json input gets the prompt and your messages on stdin ----
+  const noRun = await api("/api/tickets/DEMO-2/feedback", "POST", { text: "hello?" });
+  assert.match(noRun.error, /not running/i, "feedback needs a running agent");
+  project.agents = [{ id: "fb", name: "Claude Code", command: "fakechat -p --input-format stream-json --mcp-config {mcp_file}", enabled: true, exhaustionPatterns: [] }];
+  const cfgFb = await api("/api/config");
+  await api("/api/config", "PUT", { ...cfgFb, projects: [project] });
+  await api("/api/tickets/DEMO-2/forget", "POST");
+  await api("/api/poll-now", "POST");
+  const chatting = await waitFor(async () => {
+    const t = (await api("/api/state")).tickets["DEMO-2"];
+    return t?.status === "running" && /prompt received/.test((await api("/api/tickets/DEMO-2/log")).log) && t;
+  }, "fakechat read the prompt from stdin");
+  assert.equal(chatting.attempts[0].interactive, true, "attempt is flagged as taking messages");
+  const fb = await api("/api/tickets/DEMO-2/feedback", "POST", { text: "also add bye" });
+  assert.equal(fb.error, undefined, "feedback accepted");
+  // The agent changes nothing, so the run ends "failed" (same state as before this section) once stdin is closed on its result.
+  await waitFor(async () => (await api("/api/state")).tickets["DEMO-2"].status === "failed", "fakechat finished after feedback");
+  const fbLog = (await api("/api/tickets/DEMO-2/log")).log;
+  assert.match(fbLog, /💬 You: also add bye/, "your message is in the log");
+  assert.match(fbLog, /agent heard: also add bye/, "the agent got it on stdin");
+  assert.match(fbLog, /■ done · success · 2 turns/, "the run ended when the result arrived");
+  const blank = await api("/api/tickets/DEMO-2/feedback", "POST", { text: "   " });
+  assert.ok(blank.error, "blank feedback is rejected");
 
   // ---- Watch live + take over, with a non-Claude agent (any tool works) ----
   project.agents = [

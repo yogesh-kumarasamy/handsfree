@@ -85,6 +85,7 @@ A routine is a scheduled agent run for a project: a cron schedule (5 fields, loc
 Every ticket has one **Open** button:
 
 - **Running → 👀 Open live.** Terminal shows the agent's live output. Close the window to stop watching; the agent keeps going. Press **Enter** to take over: HandsFree stops the agent and continues its session right there, so you can talk to it.
+- **Running → message box under the live log.** Type a note (“also update the README”) and press Enter: the agent reads it as soon as its current tool call finishes and keeps going, no take-over needed. Works for agents whose command has `--input-format stream-json` (the Claude Code preset does; its prompt goes in on stdin, so there is no `{prompt}` argument). The run still ends on Claude's first result, so this is for steering mid-run; afterwards use Open / Take over.
 - **Failed / stopped → Take over.** Continues the last agent's session in its worktree.
 - **When you're done**, the ticket shows **With you**. Choose **Open PR with my changes** (commit, push, draft PR, ticket comment) or **Hand back to agents** (re-run the chain; agents are told you changed things).
 

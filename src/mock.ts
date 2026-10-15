@@ -327,6 +327,11 @@ export function createMockApi(opts: DemoOptions): Api {
       }
       return rec;
     },
+    feedback: async (k, text) => {
+      const t = state.tickets[k];
+      if (!t || t.status !== "running") throw new Error("The agent is not running. Use Take over to continue its session instead.");
+      emit({ type: "log", key: k, chunk: `\n💬 You: ${text}\n` });
+    },
     sendBulk: async (keys, text) => {
       const recs = keys.map(() => ({ kind: "bulk" as const, at: new Date().toISOString(), platform: "setmore" as const, channelId: "nN0p", channelName: "ChatSupport Team Core", text: text || `Hi team, these PRs need eyes:\n${keys.map((x) => `- ${x}`).join("\n")}`, ok: true, id: "m-demo" }));
       return { sent: recs, failed: [] };
