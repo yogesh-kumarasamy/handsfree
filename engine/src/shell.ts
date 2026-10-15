@@ -26,6 +26,8 @@ export interface RunOpts {
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
   onData?: (chunk: string) => void;
+  /** "pipe" keeps stdin open so the caller can `write` to the child (agents that take messages mid-run). Default: no stdin. */
+  stdin?: "pipe" | "ignore";
 }
 
 function killTree(child: ChildProcess) {
@@ -47,6 +49,10 @@ function killTree(child: ChildProcess) {
 export interface Running {
   done: Promise<RunResult>;
   kill: () => void;
+  /** Write to the child's stdin (no-op unless started with stdin: "pipe", or after it exited). */
+  write: (text: string) => void;
+  /** Close the child's stdin (EOF). Safe to call more than once. */
+  endInput: () => void;
 }
 
 /** Spawn a program (no shell) or a shell command (file = SHELL, args = ["-c", cmd]) in its own process group. */
@@ -55,8 +61,10 @@ export function start(file: string, args: string[], opts: RunOpts = {}): Running
     cwd: opts.cwd,
     env: { ...process.env, ...opts.env },
     detached: true, // own process group, so we can kill the agent and everything it spawned
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: [opts.stdin === "pipe" ? "pipe" : "ignore", "pipe", "pipe"],
   });
+  // A write after the child is gone raises EPIPE asynchronously; swallow it so callers never crash the engine.
+  child.stdin?.on("error", () => {});
   let stdout = "";
   let stderr = "";
   let timedOut = false;
@@ -85,7 +93,17 @@ export function start(file: string, args: string[], opts: RunOpts = {}): Running
       resolve({ code, stdout, stderr, timedOut });
     });
   });
-  return { done, kill: () => killTree(child) };
+  const stdin = child.stdin;
+  return {
+    done,
+    kill: () => killTree(child),
+    write: (text) => {
+      if (stdin && !stdin.destroyed && stdin.writable) stdin.write(text);
+    },
+    endInput: () => {
+      if (stdin && !stdin.destroyed && stdin.writable) stdin.end();
+    },
+  };
 }
 
 export const exec = (file: string, args: string[], opts?: RunOpts) => start(file, args, opts).done;

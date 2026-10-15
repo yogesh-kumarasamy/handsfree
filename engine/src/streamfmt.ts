@@ -71,8 +71,19 @@ export function sessionIdOf(line: string): string | undefined {
   }
 }
 
+/** True for a stream-json `result` line: the turn is over (with --input-format stream-json the process then waits for more input). */
+export function isResultLine(line: string): boolean {
+  const t = line.trim();
+  if (!t.startsWith("{") || !t.includes('"result"')) return false;
+  try {
+    return JSON.parse(t).type === "result";
+  } catch {
+    return false;
+  }
+}
+
 /** Line-buffered transformer: feed raw chunks, get formatted text back. */
-export function createStreamFormatter(onSession?: (id: string) => void) {
+export function createStreamFormatter(onSession?: (id: string) => void, onResult?: () => void) {
   let buf = "";
   let seen: string | undefined;
   const fmt = (lines: string[]) =>
@@ -83,6 +94,7 @@ export function createStreamFormatter(onSession?: (id: string) => void) {
           seen = id;
           onSession!(id);
         }
+        if (onResult && isResultLine(l)) onResult();
         return formatStreamLine(l);
       })
       .filter((l): l is string => l !== null)

@@ -260,6 +260,8 @@ export interface Attempt {
   note?: string;
   /** Claude Code session id (from stream-json), so you can `claude --resume` it later. */
   sessionId?: string;
+  /** The agent reads messages on stdin while it runs (command has `--input-format stream-json`), so you can send it feedback. */
+  interactive?: boolean;
 }
 
 export interface Ticket {
@@ -329,6 +331,16 @@ export type NotifyKind = "pr" | "fallback" | "failed" | "slow" | "info";
 
 export const CLAUDE_RESUME = "claude --resume {session_id} --mcp-config {mcp_file}";
 
+/**
+ * Claude Code in print mode with stream-json on both ends: the prompt and your mid-run messages go in on stdin
+ * (see `STREAM_JSON_INPUT`), so there is no {prompt} argument. The pre-stdin form is kept for migration.
+ */
+export const CLAUDE_COMMAND =
+  "claude -p --input-format stream-json --output-format stream-json --verbose --mcp-config {mcp_file} --dangerously-skip-permissions";
+export const LEGACY_CLAUDE_COMMAND = "claude -p {prompt} --mcp-config {mcp_file} --output-format stream-json --verbose --dangerously-skip-permissions";
+/** An agent whose command carries this flag reads newline-delimited user messages on stdin while it runs. */
+export const STREAM_JSON_INPUT = "--input-format stream-json";
+
 export const DEFAULT_EXHAUSTION_PATTERNS = [
   "rate.?limit",
   "usage limit",
@@ -343,7 +355,7 @@ export const DEFAULT_EXHAUSTION_PATTERNS = [
 export const AGENT_PRESETS: Omit<AgentConfig, "id">[] = [
   {
     name: "Claude Code",
-    command: "claude -p {prompt} --mcp-config {mcp_file} --output-format stream-json --verbose --dangerously-skip-permissions",
+    command: CLAUDE_COMMAND,
     enabled: true,
     exhaustionPatterns: DEFAULT_EXHAUSTION_PATTERNS,
     resumeCommand: "claude --resume {session_id} --mcp-config {mcp_file}",

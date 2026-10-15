@@ -2,7 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  CLAUDE_COMMAND,
   CLAUDE_RESUME,
+  LEGACY_CLAUDE_COMMAND,
   DEFAULT_AGENT_MESSAGE_COMMAND,
   DEFAULT_DONE_STATUS,
   DEFAULT_LINEAR_ACCOUNT,
@@ -124,7 +126,8 @@ export function normalizeProject(p: Partial<ProjectConfig> & LegacyJiraFields): 
     agents: (p.agents || []).slice(0, 4).map((a) => ({
       id: a.id || cryptoId(),
       name: a.name || "Agent",
-      command: a.command || "",
+      // The stock Claude command moved its prompt to stdin so you can message the agent mid-run; customised ones are yours.
+      command: (a.command || "").trim() === LEGACY_CLAUDE_COMMAND ? CLAUDE_COMMAND : a.command || "",
       enabled: a.enabled ?? true,
       exhaustionPatterns: a.exhaustionPatterns || [],
       // Older Claude agents had no resume command; give them the standard one.

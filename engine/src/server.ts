@@ -58,9 +58,18 @@ export function startServer(o: Orchestrator, port: number, token: string) {
     };
 
     try {
-      const m = url.pathname.match(/^\/api\/tickets\/([^/]+)\/(retry|stop|cleanup|forget|log|open|takeover|handback|publish|fix-ci|message)$/);
+      const m = url.pathname.match(/^\/api\/tickets\/([^/]+)\/(retry|stop|cleanup|forget|log|open|takeover|handback|publish|fix-ci|message|feedback)$/);
       if (m) {
         const key = decodeURIComponent(m[1]);
+        if (m[2] === "feedback") {
+          const { text } = await body<{ text?: string }>();
+          try {
+            o.feedback(key, text || "");
+            return send(200, {});
+          } catch (e) {
+            return send(400, { error: (e as Error).message });
+          }
+        }
         if (m[2] === "message") {
           const { text } = await body<{ text?: string }>();
           try {

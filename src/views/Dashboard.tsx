@@ -581,8 +581,50 @@ function TicketDetail({ api, ticket, project, prError, onCompose, onClose }: { a
           )}
           <div className="section-label">Live log</div>
           <pre className="log" ref={logRef}>{log || "No output yet."}</pre>
+          {ticket.status === "running" && ticket.attempts[ticket.attempts.length - 1]?.interactive && (
+            <FeedbackBox onSend={(text) => run(() => api.feedback(ticket.key, text))} />
+          )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Message the running agent without stopping it. Enter sends; Shift+Enter adds a line. */
+function FeedbackBox({ onSend }: { onSend: (text: string) => Promise<unknown> }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const send = async () => {
+    const t = text.trim();
+    if (!t || busy) return;
+    setBusy(true);
+    try {
+      await onSend(t);
+      setText("");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div className="row" style={{ alignItems: "flex-end" }}>
+        <textarea
+          className="textarea"
+          rows={2}
+          style={{ minHeight: 0 }}
+          placeholder="Tell the agent something while it works, e.g. “also update the README”"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              void send();
+            }
+          }}
+        />
+        <button className="btn primary" disabled={!text.trim() || busy} onClick={() => void send()}>Send</button>
+      </div>
+      <div className="small muted" style={{ marginTop: 4 }}>The agent reads it as soon as its current tool call finishes. Enter sends, Shift+Enter for a new line.</div>
     </div>
   );
 }

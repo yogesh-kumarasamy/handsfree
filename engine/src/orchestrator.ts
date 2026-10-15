@@ -14,6 +14,7 @@ import { DATA_DIR, loadConfig, loadState, logFile, normalizeProject, normalizeSe
 import {
   CLAUDE_RESUME,
   PR_STATUSES,
+  STREAM_JSON_INPUT,
   TRACKER_NOUN,
   type AgentConfig,
   type Attempt,
@@ -548,10 +549,16 @@ export class Orchestrator {
     let tail = "";
     let lastOutput = Date.now();
     const startedAt = Date.now();
-    const fmt = createStreamFormatter((id) => {
-      attempt.sessionId = id;
-      this.touch(t);
-    });
+    // stream-json input: the prompt and your mid-run messages go in on stdin; the process waits for more input
+    // after each result, so we close stdin on the first result to end the run the same way as before.
+    const interactive = agent.command.includes(STREAM_JSON_INPUT);
+    const fmt = createStreamFormatter(
+      (id) => {
+        attempt.sessionId = id;
+        this.touch(t);
+      },
+      interactive ? () => this.running.get(t.key)?.endInput() : undefined,
+    );
     const emit = (text: string) => {
       if (!text) return;
       lastOutput = Date.now();
@@ -570,6 +577,7 @@ export class Orchestrator {
       cwd: t.worktree,
       timeoutMs: this.config.settings.agentTimeoutMin * 60_000,
       env: { HANDSFREE: "1", HANDSFREE_ISSUE: t.key, CI: "1" },
+      stdin: interactive ? "pipe" : "ignore",
       onData: (d) => {
         if (sessionRe && !attempt.sessionId) {
           raw = (raw + d).slice(-8000);
@@ -583,6 +591,11 @@ export class Orchestrator {
       },
     });
     this.running.set(t.key, run);
+    if (interactive) {
+      attempt.interactive = true;
+      this.touch(t);
+      run.write(userMessageLine(prompt));
+    }
     // Some agents print nothing until they finish. Show a heartbeat with what's changed so far,
     // and flag the ticket as slow once it passes the "slow after" setting.
     const heartbeat = setInterval(() => {
@@ -649,6 +662,20 @@ export class Orchestrator {
   }
 
   // ---------- actions ----------
+  /** Send a message to the agent working on this ticket, without stopping it (agents with stream-json input only). */
+  feedback(key: string, text: string) {
+    const t = this.state.tickets[key];
+    if (!t) throw new Error("Unknown ticket");
+    const msg = text.trim();
+    if (!msg) throw new Error("Write something to send.");
+    const run = this.running.get(key);
+    const a = t.attempts[t.attempts.length - 1];
+    if (!run || t.status !== "running") throw new Error("The agent is not running. Use Take over to continue its session instead.");
+    if (!a?.interactive) throw new Error(`${a?.agentName || "This agent"} doesn't take messages mid-run. Use Open live or Take over.`);
+    run.write(userMessageLine(msg));
+    this.log(key, `\n💬 You: ${msg}\n`);
+  }
+
   stop(key: string) {
     const r = this.running.get(key);
     const t = this.state.tickets[key];
@@ -860,6 +887,11 @@ export class Orchestrator {
 }
 
 /** Index of the last attempt that ran an agent (skips "You" hand-backs). */
+/** One Claude Code stream-json input line: a user message, newline-terminated. */
+function userMessageLine(text: string) {
+  return `${JSON.stringify({ type: "user", message: { role: "user", content: text } })}\n`;
+}
+
 function lastAgentAttempt(t: Ticket) {
   let i = t.attempts.length - 1;
   while (i > 0 && t.attempts[i].agentName === "You") i--;
