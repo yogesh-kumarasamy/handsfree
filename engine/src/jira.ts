@@ -44,8 +44,9 @@ export function parseIssues(output: string): FoundIssue[] {
 }
 
 export async function searchIssues(project: ProjectConfig): Promise<{ issues: FoundIssue[]; raw: string }> {
-  if (!project.jql.trim()) throw new Error("No JQL set for this project.");
-  const cmd = fill(project.jiraSearchCommand.trim() || DEFAULT_JIRA_SEARCH, { jql: project.jql });
+  const t = project.tracker;
+  if (!t.query.trim()) throw new Error("No JQL set for this project.");
+  const cmd = fill(t.searchCommand.trim() || DEFAULT_JIRA_SEARCH, { jql: t.query });
   const r = await sh(cmd, { timeoutMs: 90_000, cwd: project.repoPath || undefined });
   if (r.timedOut) throw new Error("The Jira search command timed out after 90s.");
   if (r.code !== 0) {
@@ -60,8 +61,8 @@ export async function searchIssues(project: ProjectConfig): Promise<{ issues: Fo
 }
 
 export async function commentOnIssue(project: ProjectConfig, key: string, body: string) {
-  const tpl = project.jiraCommentCommand.trim();
-  if (!tpl) return { skipped: true as const };
+  const tpl = project.tracker.commentCommand.trim();
+  if (tpl === "-") return { skipped: true as const };
   const r = await sh(fill(tpl || DEFAULT_JIRA_COMMENT, { issue_key: key, body }), { timeoutMs: 60_000 });
   if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().slice(0, 400) || `exit ${r.code}`);
   return { skipped: false as const };

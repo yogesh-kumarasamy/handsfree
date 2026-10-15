@@ -25,11 +25,8 @@ export interface ProjectConfig {
   repoPath: string;
   baseBranch: string;
   remote: string;
-  jql: string;
-  /** Placeholders: {jql}. Must print JSON (or text containing issue keys). */
-  jiraSearchCommand: string;
-  /** Placeholders: {issue_key} {body}. Leave empty to skip the Jira comment. */
-  jiraCommentCommand: string;
+  /** Which tracker tickets come from (Jira, GitHub Issues, Linear) and how to query/comment/close them. */
+  tracker: TrackerConfig;
   /** Project-level MCP servers, e.g. {"mcpServers": {...}}. Written to {mcp_file} in each worktree. */
   mcpJson: string;
   agents: AgentConfig[];
@@ -56,7 +53,7 @@ export interface Settings {
   paused: boolean;
   notifications: boolean;
   launchAtLogin: boolean;
-  accounts: { setmore: SetmoreAccountSettings };
+  accounts: { setmore: SetmoreAccountSettings; linear: LinearAccountSettings };
 }
 
 export interface Config {
@@ -159,6 +156,41 @@ export interface SetmoreAccountSettings {
   scopes: string;
 }
 
+export type TrackerKind = "jira" | "github" | "linear";
+
+export interface TrackerConfig {
+  kind: TrackerKind;
+  /** Jira: JQL. GitHub: `gh issue list --search` filter. Linear: free-text filter (query). */
+  query: string;
+  /** Jira: {jql}. GitHub: {repo} {query}. Empty = default. */
+  searchCommand: string;
+  /** Placeholders: {issue_key} {number} {repo} {body}. Empty = default; "-" = never comment. */
+  commentCommand: string;
+  /** Placeholders: {issue_key} {number} {repo} {status}. Empty = default. */
+  transitionCommand: string;
+  /** Status on merge. Empty = don't transition. GitHub: any non-empty value closes the issue. */
+  doneStatus: string;
+  /** GitHub only: OWNER/REPO; empty = from the project's remote. */
+  repo: string;
+  /** Linear only: "me" (default), a name/email, or "" for no assignee filter. */
+  linearAssignee: string;
+}
+
+export interface LinearAccountSettings {
+  mcpUrl: string;
+  issuer: string;
+  redirectPort: number;
+  scopes: string;
+}
+
+export const DEFAULT_LINEAR_ACCOUNT: LinearAccountSettings = { mcpUrl: "https://mcp.linear.app/mcp", issuer: "https://mcp.linear.app", redirectPort: 47832, scopes: "read write" };
+export const DEFAULT_JIRA_TRANSITION = "acli jira workitem transition --key {issue_key} --status {status} --yes";
+export const DEFAULT_GITHUB_SEARCH = "gh issue list --repo {repo} --search {query} --state open --limit 50 --json number,title,body,url";
+export const DEFAULT_GITHUB_COMMENT = "gh issue comment {number} --repo {repo} --body {body}";
+export const DEFAULT_GITHUB_CLOSE = "gh issue close {number} --repo {repo} --reason completed";
+export const TRACKER_NOUN: Record<TrackerKind, string> = { jira: "Jira ticket", github: "GitHub issue", linear: "Linear issue" };
+export const DEFAULT_DONE_STATUS: Record<TrackerKind, string> = { jira: "Done", github: "closed", linear: "Done" };
+
 export type MessageKind = "review_ready" | "merge_nudge" | "manual" | "bulk" | "test";
 
 export interface MessageRecord {
@@ -249,7 +281,13 @@ export interface Ticket {
   messages?: MessageRecord[];
   /** Set while the current agent has run longer than settings.slowAfterMin. */
   slow?: boolean;
+  /** Set once the PR link was commented on the ticket (any tracker; the name is kept for saved state). */
   jiraCommented?: boolean;
+  /** Tracker-internal id (Linear issue id, GitHub number) for comments/transitions. */
+  trackerId?: string;
+  issueUrl?: string;
+  /** Set when the done transition on merge succeeded. */
+  trackerDone?: boolean;
   error?: string;
   createdAt: string;
   updatedAt: string;
@@ -264,13 +302,16 @@ export interface EngineState {
   nextPrCheckAt?: string;
   /** Per ticket key: the last `gh` error from the PR check. */
   prCheckErrors: Record<string, string>;
-  accounts: { setmore: AccountStatus };
+  accounts: { setmore: AccountStatus; linear: AccountStatus };
 }
 
 export interface FoundIssue {
   key: string;
   summary: string;
   description?: string;
+  /** Tracker-internal id when it differs from the key (Linear issue id, GitHub number). */
+  id?: string;
+  url?: string;
 }
 
 export type EngineEvent =
@@ -278,7 +319,7 @@ export type EngineEvent =
   | { type: "config"; config: Config }
   | { type: "log"; key: string; chunk: string }
   | { type: "notify"; title: string; body: string; kind: NotifyKind }
-  | { type: "account"; name: "setmore"; status: AccountStatus };
+  | { type: "account"; name: "setmore" | "linear"; status: AccountStatus };
 
 export type NotifyKind = "pr" | "fallback" | "failed" | "slow" | "info";
 

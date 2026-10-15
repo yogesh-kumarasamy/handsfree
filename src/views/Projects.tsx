@@ -27,9 +27,16 @@ function blankProject(): ProjectConfig {
     repoPath: "",
     baseBranch: "main",
     remote: "origin",
-    jql: "assignee = currentUser() AND status = \"To Do\"",
-    jiraSearchCommand: DEFAULT_JIRA_SEARCH,
-    jiraCommentCommand: DEFAULT_JIRA_COMMENT,
+    tracker: {
+      kind: "jira",
+      query: 'assignee = currentUser() AND status = "To Do"',
+      searchCommand: DEFAULT_JIRA_SEARCH,
+      commentCommand: DEFAULT_JIRA_COMMENT,
+      transitionCommand: "",
+      doneStatus: "Done",
+      repo: "",
+      linearAssignee: "me",
+    },
     mcpJson: '{\n  "mcpServers": {}\n}',
     agents: AGENT_PRESETS.map((a) => ({ ...a, id: uid(), exhaustionPatterns: [...a.exhaustionPatterns] })),
     promptExtra: "",
@@ -128,7 +135,7 @@ export function Projects({
                   <Toggle on={p.enabled} title={p.enabled ? "Pause this project" : "Activate this project"} onChange={(v) => save(config.projects.map((x) => (x.id === p.id ? { ...x, enabled: v } : x)))} />
                   <button className="btn sm" onClick={() => setEditing(p.id)}>Edit</button>
                 </div>
-                <div className="jql" title={p.jql}>{p.jql}</div>
+                <div className="jql" title={p.tracker.query}>{p.tracker.query}</div>
                 <div className="chain" style={{ gridColumn: "1 / -1" }}>
                   {chain.length === 0 && <span className="err-text">No enabled agents</span>}
                   {chain.map((a, i) => (
@@ -183,7 +190,7 @@ function ProjectEditor({
         ...x,
         name: "ChatSupport Web",
         repoPath: "/Users/yogesh/code/chatsupport-web",
-        jql: 'project = CSW AND assignee = currentUser() AND status = "To Do" ORDER BY priority DESC',
+        tracker: { ...x.tracker, query: 'project = CSW AND assignee = currentUser() AND status = "To Do" ORDER BY priority DESC' },
         mcpJson: JSON.stringify({ mcpServers: { github: { type: "http", url: "https://api.githubcopilot.com/mcp/" } } }, null, 2),
       }));
     }
@@ -234,7 +241,7 @@ function ProjectEditor({
     !p.name.trim() && "Give the project a name",
     !p.repoPath && "Choose a repository",
     repo && !repo.ok && "The folder isn't a git repository",
-    !p.jql.trim() && "Add a JQL",
+    !p.tracker.query.trim() && "Add a JQL",
     mcpError && "MCP JSON is invalid",
     enabledAgents.length === 0 && "Enable at least one agent with a command",
     p.messaging.platform !== "none" && !p.messaging.channelId && "Pick a collab channel (Messaging step)",
@@ -353,7 +360,7 @@ function ProjectEditor({
             <p className="card-sub">Which tickets to pick up. HandsFree runs this through your Jira CLI (<span className="mono">acli</span>), using the login already on your Mac — no tokens stored here. Jira status is never changed; HandsFree only comments the PR link.</p>
             <div className="field">
               <label>JQL</label>
-              <textarea className="textarea code" rows={3} value={p.jql} onChange={(e) => set({ jql: e.target.value })} />
+              <textarea className="textarea code" rows={3} value={p.tracker.query} onChange={(e) => set({ tracker: { ...p.tracker, query: e.target.value } })} />
               <span className="hint">Tip: add a label like <span className="mono">labels = handsfree</span> to control exactly what gets picked up. Each ticket is only picked up once.</span>
             </div>
             <div className="row" style={{ marginBottom: 14 }}>
@@ -372,12 +379,12 @@ function ProjectEditor({
               <summary className="small muted" style={{ cursor: "pointer", marginBottom: 12 }}>Advanced: CLI commands</summary>
               <div className="field">
                 <label>Search command</label>
-                <input className="input code" value={p.jiraSearchCommand} onChange={(e) => set({ jiraSearchCommand: e.target.value })} />
+                <input className="input code" value={p.tracker.searchCommand} onChange={(e) => set({ tracker: { ...p.tracker, searchCommand: e.target.value } })} />
                 <span className="hint"><span className="mono">{"{jql}"}</span> is filled in for you. Must print JSON (or any text containing issue keys).</span>
               </div>
               <div className="field">
                 <label>Comment command</label>
-                <input className="input code" value={p.jiraCommentCommand} onChange={(e) => set({ jiraCommentCommand: e.target.value })} />
+                <input className="input code" value={p.tracker.commentCommand} onChange={(e) => set({ tracker: { ...p.tracker, commentCommand: e.target.value } })} />
                 <span className="hint"><span className="mono">{"{issue_key}"}</span> and <span className="mono">{"{body}"}</span> are filled in. Leave empty to skip commenting.</span>
               </div>
             </details>
@@ -545,7 +552,7 @@ function ProjectEditor({
               <dt>Name</dt><dd>{p.name || <span className="err-text">missing</span>}</dd>
               <dt>Repository</dt><dd className="mono">{p.repoPath || <span className="err-text">missing</span>}</dd>
               <dt>Base / remote</dt><dd className="mono">{p.baseBranch} · {p.remote}</dd>
-              <dt>JQL</dt><dd className="mono">{p.jql}</dd>
+              <dt>JQL</dt><dd className="mono">{p.tracker.query}</dd>
               <dt>MCP servers</dt><dd>{mcpError ? <span className="err-text">invalid JSON</span> : mcpServers.join(", ") || "none"}</dd>
               <dt>Agent chain</dt>
               <dd className="chain">

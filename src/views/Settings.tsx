@@ -10,7 +10,7 @@ export function SettingsView({ api, config }: { api: Api; config: Config }) {
   const [loginMsg, setLoginMsg] = useState<string>();
   const s = config.settings;
   const sm = s.accounts.setmore;
-  const updateSetmore = (patch: Partial<typeof sm>) => update({ accounts: { setmore: { ...sm, ...patch } } });
+  const updateSetmore = (patch: Partial<typeof sm>) => update({ accounts: { ...s.accounts, setmore: { ...sm, ...patch } } });
 
   useEffect(() => {
     api.setmoreStatus().then(setAcct).catch(() => {});

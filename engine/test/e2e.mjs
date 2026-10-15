@@ -69,9 +69,7 @@ const project = {
   repoPath: repo,
   baseBranch: "main",
   remote: "origin",
-  jql: "project = DEMO",
-  jiraSearchCommand: 'acli jira workitem search --jql {jql} --json',
-  jiraCommentCommand: "acli jira workitem comment create --key {issue_key} --body {body}",
+  tracker: { kind: "jira", query: "project = DEMO", searchCommand: 'acli jira workitem search --jql {jql} --json', commentCommand: "acli jira workitem comment create --key {issue_key} --body {body}", transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me" },
   mcpJson: '{"mcpServers":{"github":{"type":"http","url":"https://example.invalid/mcp"}}}',
   agents: [
     { id: "a1", name: "Grok", command: "fakegrok {prompt}", enabled: true, exhaustionPatterns: ["rate.?limit"] },

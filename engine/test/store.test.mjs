@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { migrateState } from "../dist/test/store.js";
+import { migrateState, normalizeProject } from "../dist/test/store.js";
 
 const cfg = (draftPr) => ({ version: 1, settings: {}, projects: [{ id: "p1", draftPr }] });
 const ticket = (status, projectId = "p1") => ({ key: "X-1", projectId, status, branch: "", worktree: "", agentIndex: 0, attempts: [], createdAt: "", updatedAt: "" });
@@ -31,4 +31,26 @@ test("other statuses, poll timestamps and error maps are kept; missing maps are 
 
 test("empty file gives an empty state", () => {
   assert.deepEqual(migrateState(undefined, cfg(true)).tickets, {});
+});
+
+test("normalizeProject: legacy Jira fields migrate into tracker", () => {
+  const p = normalizeProject({ id: "p", name: "P", jql: "project = X", jiraSearchCommand: "acli custom {jql}", jiraCommentCommand: "-" });
+  assert.deepEqual(p.tracker, { kind: "jira", query: "project = X", searchCommand: "acli custom {jql}", commentCommand: "-", transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me" });
+  assert.equal("jql" in p, false);
+});
+
+test("normalizeProject: a legacy empty Jira comment command keeps meaning 'never comment'", () => {
+  assert.equal(normalizeProject({ jql: "x", jiraCommentCommand: "" }).tracker.commentCommand, "-");
+  assert.equal(normalizeProject({ jql: "x" }).tracker.commentCommand, "-");
+  assert.equal(normalizeProject({ jql: "x", jiraCommentCommand: "acli c {issue_key} {body}" }).tracker.commentCommand, "acli c {issue_key} {body}");
+});
+
+test("normalizeProject: tracker defaults per kind; unknown kind falls back to jira", () => {
+  assert.equal(normalizeProject({ tracker: { kind: "github", query: "label:hf" } }).tracker.doneStatus, "closed");
+  assert.equal(normalizeProject({ tracker: { kind: "linear" } }).tracker.doneStatus, "Done");
+  assert.equal(normalizeProject({ tracker: { kind: "nope" } }).tracker.kind, "jira");
+});
+
+test("migrateState: accounts.linear defaults to logged out", () => {
+  assert.deepEqual(migrateState({ tickets: {} }, { version: 1, settings: {}, projects: [] }).accounts.linear, { loggedIn: false });
 });
