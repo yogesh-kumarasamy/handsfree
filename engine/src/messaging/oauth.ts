@@ -231,6 +231,8 @@ export interface StoredClient {
   clientSecret?: string;
   /** The redirect URI the client was registered with; a different port means registering again. */
   redirectUri: string;
+  /** The OAuth server it was registered with; another server means registering again. */
+  issuer?: string;
   registeredAt: string;
 }
 

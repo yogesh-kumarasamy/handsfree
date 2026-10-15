@@ -3,7 +3,7 @@ import path from "node:path";
 import { changedFiles, commitAll, commitsAhead, ensureWorktree, hasUncommitted, headSha, push, removeWorktree, syncWithRemote, worktreePath } from "./git";
 import { createStreamFormatter } from "./streamfmt";
 import { failedCheckLogs, fetchPr, openPr, publishPr } from "./github";
-import { commentOnIssue, searchIssues } from "./jira";
+import { JiraTracker } from "./trackers/jira";
 import { TokenStore } from "./messaging/oauth";
 import { MessagingService } from "./messaging/service";
 import { PrEvents } from "./prevents";
@@ -155,7 +155,7 @@ export class Orchestrator {
       if (!this.config.settings.paused) {
         for (const p of this.config.projects.filter((x) => x.enabled)) {
           try {
-            const { issues } = await searchIssues(p);
+            const issues = await new JiraTracker(p).search();
             delete this.state.pollErrors[p.id];
             for (const i of issues) {
               if (this.state.tickets[i.key]) continue; // each ticket is picked up once (until you Forget it)
@@ -276,7 +276,7 @@ export class Orchestrator {
     }
     this.touch(t, { status: "merged", fix: undefined, error: undefined });
     try {
-      const r = await commentOnIssue(p, t.key, `Merged: ${t.prUrl}\n${t.summary} — shipped by HandsFree.`);
+      const r = await new JiraTracker(p).comment(t, `Merged: ${t.prUrl}\n${t.summary} — shipped by HandsFree.`);
       if (!r.skipped) this.log(t.key, "✓ Commented the merge on Jira\n");
     } catch (e) {
       this.log(t.key, `! Jira merge comment failed: ${(e as Error).message}\n`);
@@ -463,7 +463,7 @@ export class Orchestrator {
     }
     if (!t.jiraCommented) {
       try {
-        const r = await commentOnIssue(p, t.key, `HandsFree opened a ${p.draftPr ? "draft " : ""}PR for this ticket: ${t.prUrl}`);
+        const r = await new JiraTracker(p).comment(t, `HandsFree opened a ${p.draftPr ? "draft " : ""}PR for this ticket: ${t.prUrl}`);
         if (!r.skipped) {
           this.log(t.key, "✓ Commented the PR link on Jira\n");
           this.touch(t, { jiraCommented: true });

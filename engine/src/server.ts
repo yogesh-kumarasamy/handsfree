@@ -1,6 +1,6 @@
 import http from "node:http";
 import { repoInfo } from "./git";
-import { searchIssues } from "./jira";
+import { JiraTracker } from "./trackers/jira";
 import type { Orchestrator } from "./orchestrator";
 import { exec, SHELL } from "./shell";
 import { normalizeProject } from "./store";
@@ -149,7 +149,7 @@ export function startServer(o: Orchestrator, port: number, token: string) {
         case "POST /api/test-jira": {
           const { project } = await body<{ project: ProjectConfig }>();
           try {
-            return send(200, await searchIssues(normalizeProject(project)));
+            return send(200, { issues: await new JiraTracker(normalizeProject(project)).search() });
           } catch (e) {
             return send(200, { issues: [], error: (e as Error).message });
           }
