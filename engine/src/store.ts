@@ -172,3 +172,7 @@ export function normalizeRoutine(r: Partial<RoutineConfig>): RoutineConfig {
     timeoutMin: clamp(r.timeoutMin, 1, 120, 15),
   };
 }
+
+export function routineLogFile(id: string) {
+  return path.join(LOG_DIR, `routine-${id.replace(/[^A-Za-z0-9_-]/g, "_")}.log`);
+}
