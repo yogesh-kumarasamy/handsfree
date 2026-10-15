@@ -34,6 +34,11 @@ export interface Api {
   open(key: string): Promise<{ command: string }>;
   /** Give a taken-over ticket back: "pr" opens a PR with your changes, "agents" re-runs the chain. */
   handBack(key: string, mode: "pr" | "agents"): Promise<void>;
+  /** `gh pr ready` on the ticket's draft PR, then re-check it. */
+  publish(key: string): Promise<void>;
+  /** Run a CI fix round now (ignores the auto-fix setting and the round cap). */
+  fixCi(key: string): Promise<void>;
+  checkPrsNow(): Promise<void>;
   testJira(project: ProjectConfig): Promise<{ issues: FoundIssue[]; error?: string; raw?: string }>;
   repoInfo(path: string): Promise<RepoInfo>;
   doctor(): Promise<DoctorItem[]>;
@@ -94,6 +99,9 @@ function createHttpApi(base: string, token: string): Api {
     getLog: async (k) => (await call<{ log: string }>(`/api/tickets/${encodeURIComponent(k)}/log`)).log,
     open: (k) => action(`/api/tickets/${encodeURIComponent(k)}/open`, {}),
     handBack: (k, mode) => action(`/api/tickets/${encodeURIComponent(k)}/handback`, { mode }),
+    publish: (k) => action(`/api/tickets/${encodeURIComponent(k)}/publish`, {}),
+    fixCi: (k) => action(`/api/tickets/${encodeURIComponent(k)}/fix-ci`, {}),
+    checkPrsNow: () => call("/api/check-prs-now", "POST"),
     testJira: (project) => call("/api/test-jira", "POST", { project }),
     repoInfo: (path) => call("/api/repo-info", "POST", { path }),
     doctor: () => call("/api/doctor"),

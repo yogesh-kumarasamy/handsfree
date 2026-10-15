@@ -237,6 +237,15 @@ export function createMockApi(opts: DemoOptions): Api {
       emit({ type: "config", config });
     },
     pollNow: ok,
+    checkPrsNow: ok,
+    publish: async (k) => {
+      const t = state.tickets[k];
+      if (t?.pr) {
+        state = { ...state, tickets: { ...state.tickets, [k]: { ...t, status: "pr_ready", pr: { ...t.pr, draft: false } } } };
+        emit({ type: "state", state });
+      }
+    },
+    fixCi: ok,
     retry: ok,
     stop: ok,
     cleanup: ok,

@@ -1,11 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
-import { changedFiles, commitAll, commitsAhead, ensureWorktree, hasUncommitted, push, removeWorktree, worktreePath } from "./git";
+import { changedFiles, commitAll, commitsAhead, ensureWorktree, hasUncommitted, headSha, push, removeWorktree, worktreePath } from "./git";
 import { createStreamFormatter } from "./streamfmt";
-import { fetchPr, openPr } from "./github";
+import { failedCheckLogs, fetchPr, openPr, publishPr } from "./github";
 import { commentOnIssue, searchIssues } from "./jira";
 import { PrEvents } from "./prevents";
-import { mergeNudgeDue, nextStatus, toPrInfo, type RawPr } from "./prstate";
+import { buildFixPrompt, mergeNudgeDue, nextStatus, shouldAutoFix, toPrInfo, type RawPr } from "./prstate";
 import { exec, fill, q, SHELL, start, type Running } from "./shell";
 import { loadConfig, loadState, logFile, normalizeProject, saveConfig, saveState } from "./store";
 import {
@@ -48,7 +48,7 @@ export class Orchestrator {
         const last = t.attempts[t.attempts.length - 1];
         if (last && !last.endedAt) Object.assign(last, { endedAt: now(), outcome: "stopped", note: "HandsFree was quit" });
         t.status = "queued";
-        this.log(t.key, "\n↺ HandsFree restarted — re-queued\n");
+        this.log(t.key, `\n↺ HandsFree restarted — re-queued${t.fix ? ` (CI fix round ${t.fix.round})` : ""}\n`);
       }
     }
     this.persist();
@@ -221,7 +221,10 @@ export class Orchestrator {
       this.log(t.key, "\n✓ PR closed without merge — worktree removed\n");
       return this.touch(t, { status: "done", fix: undefined });
     }
-    // TASK 5 INSERTS THE CI-FIX BRANCH HERE
+    if (pr.ci === "failing" && pr.headSha !== pr.lastFixSha) {
+      if (shouldAutoFix(pr, p) && !this.config.settings.paused) return this.queueFix(p, t, pr);
+      if (!this.config.settings.paused && pr.fixRounds >= p.ciFixMaxRounds && t.status !== "pr_ci_failed") this.prEvents.emit(ev("ci_fix_exhausted"));
+    }
     if (pr.ci === "passing" && !pr.draft && !pr.reviewRequestedAt) {
       pr.reviewRequestedAt = now();
       this.prEvents.emit(ev("review_ready"));
@@ -255,6 +258,44 @@ export class Orchestrator {
     void this.checkPrs();
   }
 
+  /** Put the ticket back in the queue with the failing logs; `runTicket` sees `t.fix` and runs the fix prompt. */
+  private async queueFix(p: ProjectConfig, t: Ticket, pr: PrInfo, manual = false) {
+    const round = pr.fixRounds + 1;
+    const max = manual ? Math.max(round, p.ciFixMaxRounds) : p.ciFixMaxRounds;
+    const names = pr.failedChecks.map((c) => c.name).join(", ") || "unknown check";
+    this.log(t.key, `\n✗ CI failed on ${pr.headSha.slice(0, 7)} (${names}) — queuing fix round ${round}/${max}${manual ? " (requested by you)" : ""}\n`);
+    const logs = await failedCheckLogs(p.repoPath, pr.failedChecks);
+    pr.lastFixSha = pr.headSha;
+    this.touch(t, {
+      status: "queued",
+      error: undefined,
+      agentIndex: 0,
+      fix: { round, headSha: pr.headSha, failedChecks: pr.failedChecks, logs, requestedAt: now() },
+    });
+    this.pump();
+  }
+
+  // ---------- PR actions ----------
+  async publish(key: string) {
+    const t = this.state.tickets[key];
+    const p = t && this.project(t.projectId);
+    if (!t?.prUrl || !p) throw new Error("This ticket has no PR yet.");
+    await publishPr(p.repoPath, t.prUrl);
+    this.log(key, "\n⇡ Published — marked ready for review\n");
+    await this.checkPr(t);
+    this.persist();
+  }
+
+  /** Start a fix round now, regardless of the auto-fix setting and the round cap. */
+  async fixCi(key: string) {
+    const t = this.state.tickets[key];
+    const p = t && this.project(t.projectId);
+    if (!t?.prUrl || !p) throw new Error("This ticket has no PR yet.");
+    if (this.running.has(key) || t.fix) throw new Error("A fix is already queued or running.");
+    if (!t.pr || t.pr.ci !== "failing") throw new Error("CI isn't failing on this PR right now (press Check PRs now first).");
+    await this.queueFix(p, t, t.pr, true);
+  }
+
   // ---------- queue ----------
   pump() {
     if (this.config.settings.paused) return;
@@ -280,7 +321,13 @@ export class Orchestrator {
 
   private fail(t: Ticket, error: string, notifyUser = true) {
     this.log(t.key, `\n✖ ${error}\n`);
-    this.touch(t, { status: "failed", error, currentAgent: undefined, agentIndex: 0, slow: undefined });
+    if (t.fix) {
+      // A failed fix round still counts, so a broken chain can't loop on the same failure.
+      if (t.pr) t.pr.fixRounds = t.fix.round;
+      this.touch(t, { status: "pr_ci_failed", error, fix: undefined, currentAgent: undefined, agentIndex: 0, slow: undefined });
+    } else {
+      this.touch(t, { status: "failed", error, currentAgent: undefined, agentIndex: 0, slow: undefined });
+    }
     if (notifyUser) this.notify(`${t.key} failed`, error, "failed");
   }
 
@@ -302,7 +349,8 @@ export class Orchestrator {
     const mcpFile = path.join(hf, "mcp.json");
     fs.writeFileSync(mcpFile, p.mcpJson.trim() || '{"mcpServers":{}}');
 
-    const alreadyDone = t.attempts.some((a) => a.outcome === "success") && !t.prUrl;
+    // Skip the agents when the last attempt already succeeded (push/PR failed, or you handed back with your changes). A fix always runs them.
+    const alreadyDone = !t.fix && t.attempts[t.attempts.length - 1]?.outcome === "success";
     let winner: AgentConfig | undefined;
 
     if (!alreadyDone) {
@@ -329,7 +377,7 @@ export class Orchestrator {
         }
         if (outcome === "stopped") {
           this.log(t.key, "\n■ Stopped by you\n");
-          return this.touch(t, { status: "stopped", currentAgent: undefined, slow: undefined });
+          return this.touch(t, { status: t.fix ? "pr_ci_failed" : "stopped", fix: undefined, currentAgent: undefined, slow: undefined });
         }
         const next = chain[i + 1];
         if (next) {
@@ -347,28 +395,42 @@ export class Orchestrator {
       await push(p, t);
       const lastOk = [...t.attempts].reverse().find((a) => a.outcome === "success");
       const body = prBody(t, lastOk?.agentName || winner?.name || "agent", this.readLog(t.key, 20_000));
-      const url = await openPr(p, t, body);
-      this.log(t.key, `✓ ${p.draftPr ? "Draft PR" : "PR"} ${url}\n`);
-      this.touch(t, { prUrl: url, status: p.draftPr ? "pr_draft" : "pr_ready", agentIndex: 0 });
-      this.notify(`${p.draftPr ? "Draft PR" : "PR"} ready · ${t.key}`, t.summary, "pr");
+      // A ticket that already has a PR (CI fix, hand-back after cleanup) pushes to it; never open a second one.
+      const url = t.prUrl || (await openPr(p, t, body));
+      const sha = await headSha(t.worktree);
+      if (t.fix) {
+        const pr: PrInfo = { ...t.pr!, headSha: sha, ci: "pending", failedChecks: [], fixRounds: t.fix.round };
+        this.log(t.key, `⇡ Pushed fix round ${t.fix.round} · ${sha.slice(0, 7)}\n`);
+        this.touch(t, { prUrl: url, pr, status: nextStatus(pr), agentIndex: 0, fix: undefined });
+        this.notify(`Fix pushed · ${t.key}`, `Round ${pr.fixRounds} · waiting for CI`, "pr");
+      } else {
+        // A hand-back on an existing PR keeps its PrInfo; a brand-new PR gets it on the next check.
+        const pr = t.pr ? { ...t.pr, headSha: sha, ci: "pending" as const, failedChecks: [] } : undefined;
+        const status = pr ? nextStatus(pr) : p.draftPr ? "pr_draft" : "pr_ready";
+        this.log(t.key, `✓ ${p.draftPr ? "Draft PR" : "PR"} ${url}\n`);
+        this.touch(t, { prUrl: url, pr, status, agentIndex: 0 });
+        this.notify(`${p.draftPr ? "Draft PR" : "PR"} ready · ${t.key}`, t.summary, "pr");
+      }
       this.schedulePrCheck(3000);
     } catch (e) {
       return this.fail(t, `Agents finished, but opening the PR failed: ${(e as Error).message}. Retry will only redo this step.`);
     }
-    try {
-      const r = await commentOnIssue(p, t.key, `HandsFree opened a ${p.draftPr ? "draft " : ""}PR for this ticket: ${t.prUrl}`);
-      if (!r.skipped) {
-        this.log(t.key, "✓ Commented the PR link on Jira\n");
-        this.touch(t, { jiraCommented: true });
+    if (!t.jiraCommented) {
+      try {
+        const r = await commentOnIssue(p, t.key, `HandsFree opened a ${p.draftPr ? "draft " : ""}PR for this ticket: ${t.prUrl}`);
+        if (!r.skipped) {
+          this.log(t.key, "✓ Commented the PR link on Jira\n");
+          this.touch(t, { jiraCommented: true });
+        }
+      } catch (e) {
+        this.log(t.key, `! Jira comment failed: ${(e as Error).message}\n`);
       }
-    } catch (e) {
-      this.log(t.key, `! Jira comment failed: ${(e as Error).message}\n`);
     }
   }
 
   private async runAgent(p: ProjectConfig, t: Ticket, agent: AgentConfig, attempt: Attempt, i: number, total: number, mcpFile: string) {
     const promptFile = path.join(t.worktree, ".handsfree", "prompt.md");
-    const prompt = buildPrompt(p, t, i > 0 || t.attempts.length > 1);
+    const prompt = t.fix ? buildFixPrompt(p, t, t.fix) : buildPrompt(p, t, i > 0 || t.attempts.length > 1);
     fs.writeFileSync(promptFile, prompt);
     const cmd = fill(agent.command, {
       prompt,
@@ -497,6 +559,7 @@ export class Orchestrator {
   retry(key: string) {
     const t = this.state.tickets[key];
     if (!t || this.running.has(key)) return;
+    if (t.status === "pr_ci_failed") return void this.fixCi(key).catch((e) => this.log(key, `! ${(e as Error).message}\n`));
     this.log(key, `\n↻ Retry requested at ${now()}\n`);
     this.touch(t, { status: "queued", error: undefined, agentIndex: 0 });
     this.pump();

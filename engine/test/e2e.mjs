@@ -52,7 +52,7 @@ script("fakeslow", `echo "SESSION: abc-12345678"; echo "thinking…"; sleep 60`)
 // agent 1: edits a file, then dies on a rate limit
 script("fakegrok", `echo "working on $HANDSFREE_ISSUE"; echo "partial" > partial.txt; echo "Error: 429 rate limit exceeded" >&2; exit 1`);
 // agent 2: sees the previous work, commits
-script("fakeclaude", `test -f "$2" || exit 9; grep -q "Previous attempts" "$2" && echo "saw previous attempt"; test -f "$4" || exit 8; echo "hi" >> README.md; git add -A; git commit -qm "$HANDSFREE_ISSUE: greeting"
+script("fakeclaude", `test -f "$2" || exit 9; grep -q "Previous attempts" "$2" && echo "saw previous attempt"; grep -q "expected hi, got hello" "$2" && echo "saw ci logs"; test -f "$4" || exit 8; echo "hi" >> README.md; git add -A; git commit -qm "$HANDSFREE_ISSUE: greeting"
 echo '{"type":"system","subtype":"init","session_id":"sess-1234-abcd","model":"claude-test","mcp_servers":[{"name":"github","status":"connected"}]}'
 echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"pnpm test"}}]}}'
 echo '{"type":"result","subtype":"success","is_error":false,"num_turns":3,"total_cost_usd":0.12,"result":"Summary: added greeting"}'`);
@@ -121,7 +121,7 @@ try {
   // first poll happens ~3s after start
   const s1 = await waitFor(async () => {
     const s = await api("/api/state");
-    return s.tickets["DEMO-1"]?.status === "pr_draft" && s;
+    return s.tickets["DEMO-1"]?.status === "pr_draft" && s.tickets["DEMO-1"].jiraCommented && s;
   }, "DEMO-1 pr_open");
   const t1 = s1.tickets["DEMO-1"];
   assert.deepEqual(t1.attempts.map((a) => [a.agentName, a.outcome]), [["Grok", "exhausted"], ["Claude Code", "success"]]);
@@ -172,7 +172,109 @@ try {
   assert.equal(checked.status, "pr_draft");
   assert.equal(checked.pr.ci, "none");
 
-  // TASK 5 INSERTS THE FIX SCENARIOS HERE
+  const failing = (sha, runId) => ({
+    isDraft: false, headRefOid: sha,
+    statusCheckRollup: [{ __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: `https://github.com/acme/repo/actions/runs/${runId}/job/9` }],
+  });
+  const commitsOnRemote = () => sh(`git rev-list --count main..handsfree/DEMO-1`, remote);
+
+  // ---- Publish: gh pr ready + immediate re-check
+  prJson(101, { isDraft: false });
+  await api("/api/tickets/DEMO-1/publish", "POST", {});
+  assert.match(fs.readFileSync(path.join(root, "ready.log"), "utf8"), /pull\/101/);
+  assert.equal((await ticket("DEMO-1")).status, "pr_ready");
+
+  // ---- Paused: CI failure is recorded, no fix queued, and nothing marks the SHA as handled
+  await api("/api/pause", "POST");
+  prJson(101, failing("aaa111", 555));
+  await checkPrs();
+  const pausedT = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.status === "pr_ci_failed" && t;
+  }, "pr_ci_failed while paused");
+  assert.equal(pausedT.fix, undefined);
+  assert.equal(pausedT.pr.lastFixSha, undefined);
+  await api("/api/resume", "POST");
+
+  // ---- Fix round 1: logs fetched, agent chain runs in the same worktree, fix pushed
+  await checkPrs();
+  const fixed1 = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.status === "pr_ready" && t.pr?.fixRounds === 1 && t;
+  }, "fix round 1 pushed", 60000);
+  assert.equal(fixed1.fix, undefined);
+  assert.equal(fixed1.pr.lastFixSha, "aaa111");
+  assert.equal(fixed1.pr.ci, "pending");
+  assert.match(fs.readFileSync(path.join(root, "runs.log"), "utf8"), /run view 555 --log-failed/);
+  const fixLog = (await api("/api/tickets/DEMO-1/log")).log;
+  assert.match(fixLog, /queuing fix round 1\/2/);
+  assert.match(fixLog, /saw ci logs/);
+  assert.match(fixLog, /⇡ Pushed fix round 1/);
+  assert.equal(commitsOnRemote(), "2", "fix commit pushed on top of the feature commit");
+  assert.equal(fs.readFileSync(path.join(wt, ".handsfree", "prompt.md"), "utf8").includes("CI failed on https://github.com/acme/repo/pull/101"), true);
+
+  // ---- GitHub still reports the old failing SHA → shown as failing, but not fixed twice
+  await checkPrs();
+  const stale = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.status === "pr_ci_failed" && t;
+  }, "stale failure shown");
+  assert.equal(stale.pr.fixRounds, 1, "same SHA not fixed twice");
+  assert.equal(stale.fix, undefined);
+  // ---- GitHub sees the pushed fix: new head, checks pending → back to ready
+  prJson(101, { isDraft: false, headRefOid: "fix1", statusCheckRollup: [{ __typename: "CheckRun", name: "test", status: "IN_PROGRESS", conclusion: null }] });
+  await checkPrs();
+  await waitFor(async () => (await ticket("DEMO-1")).status === "pr_ready", "pending CI on the fixed head");
+
+  // ---- Worktree cleaned up, then CI fails on the new head → worktree recreated from the remote branch
+  await api("/api/tickets/DEMO-1/cleanup", "POST");
+  assert.ok(!fs.existsSync(wt), "worktree removed by cleanup");
+  assert.equal((await ticket("DEMO-1")).status, "pr_ready", "cleanup keeps tracking an open PR");
+  prJson(101, failing("bbb222", 556));
+  await checkPrs();
+  const fixed2 = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.pr?.fixRounds === 2 && t.status === "pr_ready" && t;
+  }, "fix round 2 pushed", 60000);
+  assert.ok(fixed2);
+  assert.match((await api("/api/tickets/DEMO-1/log")).log, /recreated worktree from origin\/handsfree\/DEMO-1/);
+  assert.equal(commitsOnRemote(), "3", "round 2 continues the pushed branch instead of restarting from main");
+
+  // ---- Rounds exhausted (max 2) → pr_ci_failed + one "needs you" event; manual Fix CI still works
+  prJson(101, failing("ccc333", 557));
+  await checkPrs();
+  const exhausted = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.status === "pr_ci_failed" && t;
+  }, "rounds exhausted");
+  assert.equal(exhausted.fix, undefined);
+  assert.match((await api("/api/tickets/DEMO-1/log")).log, /🔔 CI still failing/);
+  await api("/api/tickets/DEMO-1/fix-ci", "POST", {});
+  await waitFor(async () => (await ticket("DEMO-1")).pr?.fixRounds === 3, "manual fix round 3", 60000);
+
+  // ---- CI passes on a published PR → review_ready once
+  prJson(101, { isDraft: false, headRefOid: "ddd444", statusCheckRollup: [{ __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "SUCCESS" }] });
+  await checkPrs();
+  const ready = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.pr?.reviewRequestedAt && t;
+  }, "review_ready");
+  assert.equal(ready.status, "pr_ready");
+  await checkPrs();
+  await sleep(800);
+  assert.equal(((await api("/api/tickets/DEMO-1/log")).log.match(/🔔 Ready for review/g) || []).length, 1, "review_ready fired once");
+
+  // ---- Approved 2 h ago → pr_approved and a merge nudge, once
+  prJson(101, { isDraft: false, headRefOid: "ddd444", reviewDecision: "APPROVED", latestReviews: [{ state: "APPROVED", submittedAt: new Date(Date.now() - 2 * 3600_000).toISOString() }], statusCheckRollup: [{ __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "SUCCESS" }] });
+  await checkPrs();
+  const approved = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.status === "pr_approved" && t.pr.mergeNudgedAt && t;
+  }, "approved + nudge");
+  assert.ok(approved.pr.approvedAt);
+  await checkPrs();
+  await sleep(800);
+  assert.equal(((await api("/api/tickets/DEMO-1/log")).log.match(/🔔 Waiting to be merged/g) || []).length, 1, "nudge fired once");
 
   prJson(101, { state: "MERGED", isDraft: false, headRefOid: "ddd444", mergedAt: "2026-10-15T10:00:00Z" });
   await checkPrs();
