@@ -2,11 +2,26 @@ import fs from "node:fs";
 import path from "node:path";
 import { changedFiles, commitAll, commitsAhead, ensureWorktree, hasUncommitted, push, removeWorktree, worktreePath } from "./git";
 import { createStreamFormatter } from "./streamfmt";
-import { openPr, prState } from "./github";
+import { fetchPr, openPr } from "./github";
 import { commentOnIssue, searchIssues } from "./jira";
+import { PrEvents } from "./prevents";
+import { mergeNudgeDue, nextStatus, toPrInfo, type RawPr } from "./prstate";
 import { exec, fill, q, SHELL, start, type Running } from "./shell";
 import { loadConfig, loadState, logFile, normalizeProject, saveConfig, saveState } from "./store";
-import { CLAUDE_RESUME, PR_STATUSES, type AgentConfig, type Attempt, type Config, type EngineEvent, type EngineState, type NotifyKind, type ProjectConfig, type Ticket } from "./types";
+import {
+  CLAUDE_RESUME,
+  PR_STATUSES,
+  type AgentConfig,
+  type Attempt,
+  type Config,
+  type EngineEvent,
+  type EngineState,
+  type NotifyKind,
+  type PrEvent,
+  type PrInfo,
+  type ProjectConfig,
+  type Ticket,
+} from "./types";
 
 const now = () => new Date().toISOString();
 const TAIL_FOR_PATTERNS = 6000;
@@ -21,6 +36,10 @@ export class Orchestrator {
   private pollTimer?: NodeJS.Timeout;
   private polling = false;
   private stateTimer?: NodeJS.Timeout;
+  /** Once-per-PR lifecycle events. Default subscriber: notification + log. Messaging (roadmap item 3) subscribes here too. */
+  prEvents = new PrEvents();
+  private prTimer?: NodeJS.Timeout;
+  private checkingPrs = false;
 
   start() {
     // Agents died with the previous engine process: put them back in the queue at the agent they were on.
@@ -33,7 +52,9 @@ export class Orchestrator {
       }
     }
     this.persist();
+    this.prEvents.on((e) => this.onPrEvent(e));
     this.schedulePoll(3000);
+    this.schedulePrCheck(5000);
   }
 
   // ---------- events ----------
@@ -52,6 +73,18 @@ export class Orchestrator {
   private notify(title: string, body: string, kind: NotifyKind) {
     this.emit({ type: "notify", title, body, kind });
   }
+  private onPrEvent(e: PrEvent) {
+    const t = this.state.tickets[e.key];
+    const text: Record<PrEvent["kind"], [string, string]> = {
+      review_ready: ["Ready for review", "CI passed on the published PR — time to ask the team to review"],
+      merge_nudge: ["Waiting to be merged", "Approved, but still not merged"],
+      merged: ["Merged", "PR merged — worktree removed"],
+      ci_fix_exhausted: ["CI still failing", "Automatic fix rounds used up — needs you"],
+    };
+    const [title, body] = text[e.kind];
+    this.log(e.key, `\n🔔 ${title} · ${body}\n`);
+    this.notify(`${e.key}: ${title}`, `${body}${t ? ` · ${t.summary}` : ""}`, "pr");
+  }
   log(key: string, chunk: string) {
     fs.appendFileSync(logFile(key), chunk);
     this.emit({ type: "log", key, chunk });
@@ -68,6 +101,7 @@ export class Orchestrator {
   // ---------- config ----------
   updateConfig(next: Config) {
     const prevInterval = this.config.settings.pollIntervalMin;
+    const prevPr = this.config.settings.prPollIntervalMin;
     const wasPaused = this.config.settings.paused;
     this.config = {
       version: 1,
@@ -77,6 +111,7 @@ export class Orchestrator {
     saveConfig(this.config);
     this.emit({ type: "config", config: this.config });
     if (prevInterval !== this.config.settings.pollIntervalMin || (wasPaused && !this.config.settings.paused)) this.schedulePoll(1000);
+    if (prevPr !== this.config.settings.prPollIntervalMin) this.schedulePrCheck(1000);
     this.pump();
     return this.config;
   }
@@ -100,7 +135,6 @@ export class Orchestrator {
     if (this.polling) return;
     this.polling = true;
     try {
-      await this.checkMergedPrs();
       if (!this.config.settings.paused) {
         for (const p of this.config.projects.filter((x) => x.enabled)) {
           try {
@@ -137,21 +171,88 @@ export class Orchestrator {
     }
   }
 
-  private async checkMergedPrs() {
-    for (const t of Object.values(this.state.tickets).filter((x) => PR_STATUSES.includes(x.status) && x.prUrl)) {
-      const p = this.project(t.projectId);
-      if (!p) continue;
-      const s = await prState(p.repoPath, t.prUrl!);
-      if (s === "MERGED" || s === "CLOSED") {
-        try {
-          await removeWorktree(p, t);
-          this.log(t.key, `\n✓ PR ${s.toLowerCase()} — worktree removed\n`);
-        } catch (e) {
-          this.log(t.key, `\n! PR ${s.toLowerCase()} but worktree removal failed: ${(e as Error).message}\n`);
-        }
-        this.touch(t, { status: "done" });
+  // ---------- PR check (its own timer) ----------
+  schedulePrCheck(delayMs?: number) {
+    clearTimeout(this.prTimer);
+    const ms = delayMs ?? this.config.settings.prPollIntervalMin * 60_000;
+    this.state.nextPrCheckAt = new Date(Date.now() + ms).toISOString();
+    this.persist();
+    this.prTimer = setTimeout(() => void this.checkPrs(), ms);
+  }
+
+  async checkPrs() {
+    if (this.checkingPrs) return;
+    this.checkingPrs = true;
+    try {
+      for (const t of Object.values(this.state.tickets)) {
+        if (!t.prUrl || !PR_STATUSES.includes(t.status) || this.running.has(t.key)) continue;
+        await this.checkPr(t);
       }
+      for (const key of Object.keys(this.state.prCheckErrors)) if (!this.state.tickets[key]) delete this.state.prCheckErrors[key];
+      this.state.lastPrCheckAt = now();
+    } finally {
+      this.checkingPrs = false;
+      this.schedulePrCheck();
+      this.pump();
     }
+  }
+
+  /** Fetch one PR and apply the status table; once-only side effects are guarded by fields on `t.pr`. */
+  private async checkPr(t: Ticket) {
+    const p = this.project(t.projectId);
+    if (!p) return;
+    let raw: RawPr;
+    try {
+      raw = await fetchPr(p.repoPath, t.prUrl!);
+      delete this.state.prCheckErrors[t.key];
+    } catch (e) {
+      this.state.prCheckErrors[t.key] = (e as Error).message;
+      this.persist();
+      return;
+    }
+    const pr = toPrInfo(raw, t.pr);
+    t.pr = pr;
+    const status = nextStatus(pr);
+    const ev = (kind: PrEvent["kind"]): PrEvent => ({ kind, key: t.key, prUrl: pr.url, projectId: p.id, at: now() });
+
+    if (status === "merged") return this.onMerged(p, t);
+    if (status === "done") {
+      await removeWorktree(p, t).catch((e) => this.log(t.key, `\n! PR closed but worktree removal failed: ${(e as Error).message}\n`));
+      this.log(t.key, "\n✓ PR closed without merge — worktree removed\n");
+      return this.touch(t, { status: "done", fix: undefined });
+    }
+    // TASK 5 INSERTS THE CI-FIX BRANCH HERE
+    if (pr.ci === "passing" && !pr.draft && !pr.reviewRequestedAt) {
+      pr.reviewRequestedAt = now();
+      this.prEvents.emit(ev("review_ready"));
+    }
+    if (status === "pr_approved" && mergeNudgeDue(pr, p, Date.now())) {
+      pr.mergeNudgedAt = now();
+      this.prEvents.emit(ev("merge_nudge"));
+    }
+    if (status !== t.status) this.log(t.key, `\n◆ ${describeStatus(status, pr)}\n`);
+    this.touch(t, { status });
+  }
+
+  private async onMerged(p: ProjectConfig, t: Ticket) {
+    try {
+      await removeWorktree(p, t);
+      this.log(t.key, "\n✓ PR merged — worktree removed\n");
+    } catch (e) {
+      this.log(t.key, `\n! PR merged but worktree removal failed: ${(e as Error).message}\n`);
+    }
+    this.touch(t, { status: "merged", fix: undefined, error: undefined });
+    try {
+      const r = await commentOnIssue(p, t.key, `Merged: ${t.prUrl}\n${t.summary} — shipped by HandsFree.`);
+      if (!r.skipped) this.log(t.key, "✓ Commented the merge on Jira\n");
+    } catch (e) {
+      this.log(t.key, `! Jira merge comment failed: ${(e as Error).message}\n`);
+    }
+    this.prEvents.emit({ kind: "merged", key: t.key, prUrl: t.prUrl!, projectId: p.id, at: now() });
+  }
+
+  checkPrsNow() {
+    void this.checkPrs();
   }
 
   // ---------- queue ----------
@@ -249,7 +350,8 @@ export class Orchestrator {
       const url = await openPr(p, t, body);
       this.log(t.key, `✓ ${p.draftPr ? "Draft PR" : "PR"} ${url}\n`);
       this.touch(t, { prUrl: url, status: p.draftPr ? "pr_draft" : "pr_ready", agentIndex: 0 });
-      this.notify(`Draft PR ready · ${t.key}`, t.summary, "pr");
+      this.notify(`${p.draftPr ? "Draft PR" : "PR"} ready · ${t.key}`, t.summary, "pr");
+      this.schedulePrCheck(3000);
     } catch (e) {
       return this.fail(t, `Agents finished, but opening the PR failed: ${(e as Error).message}. Retry will only redo this step.`);
     }
@@ -405,7 +507,7 @@ export class Orchestrator {
     if (!t || this.running.has(key)) return;
     if (p) await removeWorktree(p, t).catch((e) => this.log(key, `! cleanup: ${(e as Error).message}\n`));
     this.log(key, "\n🧹 Worktree removed\n");
-    this.touch(t, { status: "done" });
+    this.touch(t, PR_STATUSES.includes(t.status) ? {} : { status: "done" });
   }
   /** The interactive command that continues an attempt's session, for any agent. "" = plain shell. */
   private resumeCommandFor(t: Ticket, idx: number) {
@@ -526,7 +628,7 @@ export class Orchestrator {
   async takeOver(key: string, open = true): Promise<{ command: string; resume: string }> {
     const t = this.state.tickets[key];
     if (!t) throw new Error("Unknown ticket");
-    if (!["running", "failed", "stopped", "manual", "queued"].includes(t.status)) throw new Error(`Can't take over a ticket that is ${t.status}.`);
+    if (!["running", "failed", "stopped", "manual", "queued", "pr_ci_failed"].includes(t.status)) throw new Error(`Can't take over a ticket that is ${t.status}.`);
     if (this.running.has(key)) {
       this.takeoverRequested.add(key);
       this.stopRequested.add(key);
@@ -582,6 +684,7 @@ export class Orchestrator {
     this.persist();
   }
   shutdown() {
+    clearTimeout(this.prTimer);
     for (const r of this.running.values()) r?.kill();
   }
 }
@@ -650,4 +753,19 @@ function prBody(t: Ticket, agentName: string, log: string) {
     "### Agent summary",
     summary ? "```\n" + summary + "\n```" : "_No summary captured._",
   ].join("\n");
+}
+
+function describeStatus(s: Ticket["status"], pr: PrInfo) {
+  switch (s) {
+    case "pr_draft":
+      return `Draft PR · CI ${pr.ci}`;
+    case "pr_ready":
+      return `Ready for review · CI ${pr.ci}${pr.reviewDecision ? ` · ${pr.reviewDecision.toLowerCase().replace("_", " ")}` : ""}`;
+    case "pr_ci_failed":
+      return `CI failing: ${pr.failedChecks.map((c) => c.name).join(", ") || "unknown check"}`;
+    case "pr_approved":
+      return `Approved${pr.approvedAt ? ` at ${pr.approvedAt}` : ""} · waiting to be merged`;
+    default:
+      return s;
+  }
 }

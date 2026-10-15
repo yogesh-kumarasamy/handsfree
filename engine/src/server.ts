@@ -99,6 +99,9 @@ export function startServer(o: Orchestrator, port: number, token: string) {
         case "POST /api/poll-now":
           void o.poll();
           return send(200, {});
+        case "POST /api/check-prs-now":
+          o.checkPrsNow();
+          return send(200, {});
         case "POST /api/test-jira": {
           const { project } = await body<{ project: ProjectConfig }>();
           try {

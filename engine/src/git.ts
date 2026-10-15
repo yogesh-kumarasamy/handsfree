@@ -46,11 +46,22 @@ export async function ensureWorktree(project: ProjectConfig, t: Ticket): Promise
   const remoteRef = `${project.remote}/${project.baseBranch}`;
   const hasRemote = (await tryGit(repo, ["rev-parse", "--verify", "--quiet", remoteRef])) !== undefined;
   const baseRef = hasRemote ? remoteRef : project.baseBranch;
+  // The branch may already be pushed (e.g. the worktree was cleaned up and CI now fails): continue it, don't restart from base.
+  // Trust the remote-tracking ref only when the fetch succeeds: a stale ref outlives a deleted remote branch.
+  const fetchedBranch = await exec("git", ["fetch", project.remote, t.branch], { cwd: repo, timeoutMs: 180_000 });
+  const remoteBranch = `${project.remote}/${t.branch}`;
+  const pushed = fetchedBranch.code === 0 && (await tryGit(repo, ["rev-parse", "--verify", "--quiet", remoteBranch])) !== undefined;
   await tryGit(repo, ["worktree", "prune"]);
   fs.mkdirSync(path.dirname(t.worktree), { recursive: true });
-  await git(repo, ["worktree", "add", "-B", t.branch, t.worktree, baseRef]);
+  await git(repo, ["worktree", "add", "-B", t.branch, t.worktree, pushed ? remoteBranch : baseRef]);
   t.baseRef = baseRef;
-  return `created worktree from ${baseRef}${fetched.code !== 0 ? " (fetch failed, using local ref)" : ""}`;
+  return pushed
+    ? `recreated worktree from ${remoteBranch}`
+    : `created worktree from ${baseRef}${fetched.code !== 0 ? " (fetch failed, using local ref)" : ""}`;
+}
+
+export async function headSha(wt: string) {
+  return git(wt, ["rev-parse", "HEAD"]);
 }
 
 export async function hasUncommitted(wt: string) {
@@ -75,6 +86,10 @@ export async function commitsAhead(wt: string, baseRef: string) {
 }
 
 export async function push(project: ProjectConfig, t: Ticket) {
+  // A remote-tracking ref can outlive its branch (GitHub deletes merged branches). --force-with-lease would then
+  // refuse with "stale info", so drop the stale ref — but only when the branch is really gone, to keep the lease honest.
+  const ls = await exec("git", ["ls-remote", "--exit-code", "--heads", project.remote, t.branch], { cwd: t.worktree, timeoutMs: 60_000 });
+  if (ls.code === 2) await tryGit(t.worktree, ["update-ref", "-d", `refs/remotes/${project.remote}/${t.branch}`]);
   await git(t.worktree, ["push", "-u", "--force-with-lease", project.remote, `HEAD:refs/heads/${t.branch}`], 300_000);
 }
 

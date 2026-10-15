@@ -40,7 +40,9 @@ script("gh", `
 case "$1 $2" in
   "pr list") echo "" ;;
   "pr create") n=$(cat "${root}/prn" 2>/dev/null || echo 100); n=$((n+1)); echo $n > "${root}/prn"; echo "$@" >> "${root}/prs.log"; echo "https://github.com/acme/repo/pull/$n" ;;
-  "pr view") cat "${root}/prstate" 2>/dev/null || echo OPEN ;;
+  "pr view") n="\${3##*/}"; cat "${root}/pr-$n.json" 2>/dev/null || echo "{\\"number\\":$n,\\"url\\":\\"https://github.com/acme/repo/pull/$n\\",\\"state\\":\\"OPEN\\",\\"isDraft\\":true,\\"headRefOid\\":\\"aaa111\\",\\"mergedAt\\":null,\\"reviewDecision\\":\\"\\",\\"latestReviews\\":[],\\"statusCheckRollup\\":[]}" ;;
+  "pr ready") echo "$@" >> "${root}/ready.log" ;;
+  "run view") echo "$@" >> "${root}/runs.log"; echo "Run $3 ▸ job test"; echo "FAIL tests/greeting.test.js: expected hi, got hello" ;;
   "auth status") echo "Logged in to github.com as tester"; exit 0 ;;
 esac`);
 // stand-in for macOS `open`: keep a copy of the Terminal launcher so the test can read it
@@ -96,6 +98,14 @@ async function waitFor(fn, label, ms = 30000) {
   }
   throw new Error(`timeout waiting for: ${label}`);
 }
+// pr-<n>.json drives the fake `gh pr view` for PR <n>; default = open draft, no checks.
+const prJson = (n, over = {}) =>
+  fs.writeFileSync(
+    path.join(root, `pr-${n}.json`),
+    JSON.stringify({ number: n, url: `https://github.com/acme/repo/pull/${n}`, state: "OPEN", isDraft: true, headRefOid: "aaa111", mergedAt: null, reviewDecision: "", latestReviews: [], statusCheckRollup: [], ...over }),
+  );
+const checkPrs = () => api("/api/check-prs-now", "POST");
+const ticket = async (k) => (await api("/api/state")).tickets[k];
 
 try {
   await waitFor(() => fetch(base + "/api/health").then((r) => r.ok).catch(() => false), "engine up");
@@ -153,13 +163,33 @@ try {
   await sleep(1500);
   assert.equal(Object.keys((await api("/api/state")).tickets).length, 2);
 
-  // merge → next poll removes worktree
-  fs.writeFileSync(path.join(root, "prstate"), "MERGED");
-  await api("/api/poll-now", "POST");
-  await waitFor(async () => (await api("/api/state")).tickets["DEMO-1"]?.status === "done", "DEMO-1 done");
+  // ---- PR check: draft PR gets its PrInfo; merge → worktree removed, Jira told, status merged
+  await checkPrs();
+  const checked = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.pr?.headSha === "aaa111" && t;
+  }, "DEMO-1 PrInfo after first check");
+  assert.equal(checked.status, "pr_draft");
+  assert.equal(checked.pr.ci, "none");
+
+  // TASK 5 INSERTS THE FIX SCENARIOS HERE
+
+  prJson(101, { state: "MERGED", isDraft: false, headRefOid: "ddd444", mergedAt: "2026-10-15T10:00:00Z" });
+  await checkPrs();
+  const mergedT = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.status === "merged" && t;
+  }, "DEMO-1 merged");
   assert.ok(!fs.existsSync(wt), "worktree removed after merge");
+  assert.equal(mergedT.pr.mergedAt, "2026-10-15T10:00:00Z");
+  assert.match(fs.readFileSync(path.join(root, "comments.log"), "utf8"), /DEMO-1 .*Merged.*pull\/101/, "merge commented on Jira");
+  assert.match((await api("/api/tickets/DEMO-1/log")).log, /🔔 Merged/);
 
   // failing chain → failed, then retry
+  // DEMO-2 is re-picked as fresh work: drop its worktree and the pushed branch so nothing is "continued".
+  await api("/api/tickets/DEMO-2/cleanup", "POST");
+  assert.equal((await ticket("DEMO-2")).status, "pr_draft", "cleanup keeps tracking an open PR");
+  sh("git branch -D handsfree/DEMO-2", remote);
   project.agents = [{ id: "x", name: "Broken", command: "false", enabled: true, exhaustionPatterns: [] }];
   const cfg = await api("/api/config");
   await api("/api/config", "PUT", { ...cfg, projects: [project] });
@@ -221,7 +251,7 @@ try {
 
   console.log("\n✅ e2e passed");
 } catch (e) {
-  console.error("\n❌ e2e failed:", e.message);
+  console.error("\n❌ e2e failed:", e.stack || e.message);
   for (const k of ["DEMO-1", "DEMO-2"]) {
     try {
       console.error(`--- log ${k} ---\n` + fs.readFileSync(path.join(data, "logs", `${k}.log`), "utf8"));
