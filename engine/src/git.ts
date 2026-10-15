@@ -57,6 +57,13 @@ export async function hasUncommitted(wt: string) {
   return ((await git(wt, ["status", "--porcelain"])) || "").length > 0;
 }
 
+/** Files changed vs the base, committed or not, plus new untracked files (for the progress heartbeat). */
+export async function changedFiles(wt: string, baseRef?: string) {
+  const tracked = baseRef ? (await tryGit(wt, ["diff", "--name-only", baseRef])) || "" : "";
+  const untracked = (await tryGit(wt, ["ls-files", "--others", "--exclude-standard"])) || "";
+  return new Set([...tracked.split("\n"), ...untracked.split("\n")].filter(Boolean)).size;
+}
+
 export async function commitAll(wt: string, message: string) {
   await git(wt, ["add", "-A"]);
   const r = await exec("git", ["commit", "-m", message], { cwd: wt, timeoutMs: 300_000 });

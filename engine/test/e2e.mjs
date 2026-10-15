@@ -46,7 +46,10 @@ esac`);
 // agent 1: edits a file, then dies on a rate limit
 script("fakegrok", `echo "working on $HANDSFREE_ISSUE"; echo "partial" > partial.txt; echo "Error: 429 rate limit exceeded" >&2; exit 1`);
 // agent 2: sees the previous work, commits
-script("fakeclaude", `test -f "$2" || exit 9; grep -q "Previous attempts" "$2" && echo "saw previous attempt"; test -f "$4" || exit 8; echo "hi" >> README.md; git add -A; git commit -qm "$HANDSFREE_ISSUE: greeting"; echo "Summary: added greeting"`);
+script("fakeclaude", `test -f "$2" || exit 9; grep -q "Previous attempts" "$2" && echo "saw previous attempt"; test -f "$4" || exit 8; echo "hi" >> README.md; git add -A; git commit -qm "$HANDSFREE_ISSUE: greeting"
+echo '{"type":"system","subtype":"init","model":"claude-test","mcp_servers":[{"name":"github","status":"connected"}]}'
+echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"pnpm test"}}]}}'
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":3,"total_cost_usd":0.12,"result":"Summary: added greeting"}'`);
 
 const project = {
   id: "p1",
@@ -115,10 +118,17 @@ try {
   assert.match(sh(`git log --oneline main..handsfree/DEMO-1`, remote), /DEMO-1/, "branch pushed to remote");
   const wt = path.join(repo, ".worktrees", "DEMO-1");
   assert.ok(fs.existsSync(path.join(wt, ".handsfree", "mcp.json")), "mcp.json written");
+  const prBodyText = fs.readFileSync(path.join(wt, ".handsfree", "pr-body.md"), "utf8");
+  assert.match(prBodyText, /```\nSummary: added greeting\n```/, "PR body uses Claude's final summary");
   assert.equal(sh("git status --porcelain", repo), "", "main checkout untouched (.worktrees excluded)");
   const log = (await api("/api/tickets/DEMO-1/log")).log;
   assert.match(log, /Falling back to Agent 2\/2/);
   assert.match(log, /saw previous attempt/);
+  assert.match(log, /· session started · claude-test · MCP: github/, "stream-json init formatted");
+  assert.match(log, /→ Bash pnpm test/, "stream-json tool use formatted");
+  assert.match(log, /■ done · success · 3 turns · \$0\.12\n\nSummary: added greeting/, "stream-json result formatted");
+  assert.doesNotMatch(log, /"type":"assistant"/, "raw JSON hidden");
+  assert.match(fs.readFileSync(path.join(root, "prs.log"), "utf8"), /--draft/);
 
   // maxParallel=1 → DEMO-2 runs after DEMO-1
   await waitFor(async () => (await api("/api/state")).tickets["DEMO-2"]?.status === "pr_open", "DEMO-2 pr_open");

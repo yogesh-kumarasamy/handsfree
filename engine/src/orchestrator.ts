@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { commitAll, commitsAhead, ensureWorktree, hasUncommitted, push, removeWorktree, worktreePath } from "./git";
+import { changedFiles, commitAll, commitsAhead, ensureWorktree, hasUncommitted, push, removeWorktree, worktreePath } from "./git";
+import { createStreamFormatter } from "./streamfmt";
 import { openPr, prState } from "./github";
 import { commentOnIssue, searchIssues } from "./jira";
 import { fill, SHELL, start, type Running } from "./shell";
@@ -272,17 +273,34 @@ export class Orchestrator {
     this.log(t.key, `\n▶ Agent ${i + 1}/${total} · ${agent.name}\n$ ${agent.command}\n`);
 
     let tail = "";
+    let lastOutput = Date.now();
+    const startedAt = Date.now();
+    const fmt = createStreamFormatter();
+    const emit = (text: string) => {
+      if (!text) return;
+      lastOutput = Date.now();
+      tail = (tail + text).slice(-TAIL_FOR_PATTERNS);
+      this.log(t.key, text);
+    };
     const run = start(SHELL, ["-c", cmd], {
       cwd: t.worktree,
       timeoutMs: this.config.settings.agentTimeoutMin * 60_000,
       env: { HANDSFREE: "1", HANDSFREE_ISSUE: t.key, CI: "1" },
-      onData: (d) => {
-        tail = (tail + d).slice(-TAIL_FOR_PATTERNS);
-        this.log(t.key, d);
-      },
+      onData: (d) => emit(fmt.push(d)),
     });
     this.running.set(t.key, run);
+    // Some agents print nothing until they finish. Show a heartbeat with what's changed so far.
+    const heartbeat = setInterval(() => {
+      if (Date.now() - lastOutput < 60_000) return;
+      void changedFiles(t.worktree, t.baseRef).then((n) => {
+        const min = Math.round((Date.now() - startedAt) / 60_000);
+        this.log(t.key, `· still running · ${min} min · ${n} file${n === 1 ? "" : "s"} changed so far\n`);
+        lastOutput = Date.now();
+      });
+    }, 15_000);
     const res = await run.done;
+    clearInterval(heartbeat);
+    emit(fmt.flush());
     this.running.set(t.key, null);
     attempt.exitCode = res.code;
 
@@ -404,7 +422,9 @@ export function buildPrompt(p: ProjectConfig, t: Ticket, continuing: boolean) {
 function prBody(t: Ticket, agentName: string, log: string) {
   // The agent's final summary is the last part of its output.
   const lastRun = log.split(/\n▶ Agent /).pop() || "";
-  const summary = lastRun.split("\n").slice(2).join("\n").replace(/\n[✓✖].*$/s, "").trim().slice(-3500);
+  // Claude's stream-json result ("■ done …") carries its final summary; otherwise use the end of the output.
+  const result = /\n■ done[^\n]*\n\n([\s\S]*?)(?:\n[✓✖] |$)/.exec(lastRun)?.[1];
+  const summary = (result ?? lastRun.split("\n").slice(2).join("\n").replace(/\n[✓✖].*$/s, "")).replace(/\n· still running[^\n]*/g, "").trim().slice(-3500);
   return [
     `Automated by **HandsFree** for **${t.key}**: ${t.summary}`,
     "",

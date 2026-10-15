@@ -21,6 +21,7 @@ logs/
 # agent worktrees (created by the app and by Claude Code jobs)
 .worktrees/
 .claude/worktrees/
+.claude/settings.local.json
 
 # OS / editor
 .DS_Store

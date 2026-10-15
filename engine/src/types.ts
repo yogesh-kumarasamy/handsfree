@@ -112,7 +112,7 @@ export const DEFAULT_EXHAUSTION_PATTERNS = [
 export const AGENT_PRESETS: Omit<AgentConfig, "id">[] = [
   {
     name: "Claude Code",
-    command: "claude -p {prompt} --mcp-config {mcp_file} --dangerously-skip-permissions",
+    command: "claude -p {prompt} --mcp-config {mcp_file} --output-format stream-json --verbose --dangerously-skip-permissions",
     enabled: true,
     exhaustionPatterns: DEFAULT_EXHAUSTION_PATTERNS,
   },
