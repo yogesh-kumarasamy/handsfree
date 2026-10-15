@@ -299,6 +299,8 @@ export class Orchestrator {
         if (!r.skipped) {
           this.log(t.key, `✓ Moved the ${tracker.noun} to “${done}”\n`);
           this.touch(t, { trackerDone: true });
+        } else if (r.reason) {
+          this.log(t.key, `· ${tracker.noun}: ${r.reason}; status left as is\n`);
         }
       } catch (e) {
         this.log(t.key, `! Couldn't move the ${tracker.noun} to “${done}”: ${(e as Error).message}\n`);
@@ -308,6 +310,7 @@ export class Orchestrator {
     try {
       const r = await tracker.comment(t, `Merged: ${t.prUrl}\n${t.summary} — shipped by HandsFree.`);
       if (!r.skipped) this.log(t.key, `✓ Commented the merge on the ${tracker.noun}\n`);
+      else if (r.reason) this.log(t.key, `· ${tracker.noun}: ${r.reason}; not commented\n`);
     } catch (e) {
       this.log(t.key, `! ${tracker.noun} merge comment failed: ${(e as Error).message}\n`);
     }
@@ -498,6 +501,8 @@ export class Orchestrator {
         if (!r.skipped) {
           this.log(t.key, `✓ Commented the PR link on the ${tracker.noun}\n`);
           this.touch(t, { jiraCommented: true });
+        } else if (r.reason) {
+          this.log(t.key, `· ${tracker.noun}: ${r.reason}; not commented\n`);
         }
       } catch (e) {
         this.log(t.key, `! ${tracker.noun} comment failed: ${(e as Error).message}\n`);

@@ -4,7 +4,7 @@ import { McpClient, McpError, toolJson } from "../messaging/mcpclient";
 import type { ClientStore, TokenStore } from "../messaging/oauth";
 import { TokenKeeper } from "../messaging/tokens";
 import { TRACKER_NOUN, type AccountStatus, type FoundIssue, type LinearAccountSettings } from "../types";
-import type { TicketRef, TrackerAdapter, TrackerProject } from "./adapter";
+import type { StepResult, TicketRef, TrackerAdapter, TrackerProject } from "./adapter";
 
 type Schema = { properties?: Record<string, unknown> } | undefined;
 
@@ -45,11 +45,11 @@ export class LinearConnection {
     return this.toolsPromise;
   }
 
-  /** Logs a missing tool once per process. */
-  warnOnce(tool: string) {
-    if (this.warned.has(tool)) return;
-    this.warned.add(tool);
-    console.warn(`[handsfree] The Linear MCP server has no ${tool} tool; that step is skipped.`);
+  /** Engine log, once per process per reason (the ticket log gets it every time). */
+  warnOnce(reason: string) {
+    if (this.warned.has(reason)) return;
+    this.warned.add(reason);
+    console.warn(`[handsfree] ${reason}; that step is skipped.`);
   }
 }
 
@@ -170,38 +170,32 @@ export class LinearTracker implements TrackerAdapter {
     throw new McpError("The Linear MCP server has no list_issues tool.");
   }
 
-  async comment(t: TicketRef, body: string) {
+  async comment(t: TicketRef, body: string): Promise<StepResult> {
+    if (this.p.tracker.commentCommand.trim() === "-") return { skipped: true };
     const tools = await this.conn.tools();
-    if (!tools.has("create_comment")) {
-      this.conn.warnOnce("create_comment");
-      return { skipped: true };
-    }
-    const s = tools.get("create_comment");
-    const idArg = argName(s, ["issueId", "id", "issue"]);
-    if (!idArg) {
-      this.conn.warnOnce("create_comment issue argument");
-      return { skipped: true };
-    }
+    if (!tools.has("create_comment")) return this.skip("Linear has no create_comment tool");
+    const idArg = argName(tools.get("create_comment"), ["issueId", "id", "issue"]);
+    if (!idArg) return this.skip("create_comment has no issue argument");
     await this.conn.mcp.callTool("create_comment", { [idArg]: t.trackerId || t.key, body });
     return { skipped: false };
   }
 
-  async transition(t: TicketRef, status: string) {
+  async transition(t: TicketRef, status: string): Promise<StepResult> {
     if (!status.trim()) return { skipped: true };
     const tools = await this.conn.tools();
-    if (!tools.has("update_issue")) {
-      this.conn.warnOnce("update_issue");
-      return { skipped: true };
-    }
+    if (!tools.has("update_issue")) return this.skip("Linear has no update_issue tool");
     const s = tools.get("update_issue");
     const idArg = argName(s, ["id", "issueId", "issue"]);
+    if (!idArg) return this.skip("update_issue has no issue argument");
     const stateArg = argName(s, ["state", "stateId", "status"]);
-    if (!idArg || !stateArg) {
-      this.conn.warnOnce("update_issue state argument");
-      return { skipped: true };
-    }
+    if (!stateArg) return this.skip("update_issue has no state argument");
     await this.conn.mcp.callTool("update_issue", { [idArg]: t.trackerId || t.key, [stateArg]: status });
     return { skipped: false };
+  }
+
+  private skip(reason: string): StepResult {
+    this.conn.warnOnce(reason);
+    return { skipped: true, reason };
   }
 }
 

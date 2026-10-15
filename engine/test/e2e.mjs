@@ -92,25 +92,21 @@ const mcp = await startFakeMcp({ validTokens });
 const linTokens = new Set();
 const linAuth = await startFakeAuth({ validTokens: linTokens, requireRegistered: true });
 const linText = (o) => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
-const linMcp = await startFakeMcp({
-  validTokens: linTokens,
-  tools: {
+const linIssues = [
+  { id: "uuid-1", identifier: "ENG-7", title: "Add greeting", description: "Say hi", url: "https://linear.app/x/ENG-7", state: { name: "Todo", type: "unstarted" } },
+  { id: "uuid-0", identifier: "ENG-6", title: "Shipped long ago", state: { name: "Done", type: "completed" } },
+  { id: "uuid-9", identifier: "ENG-9", title: "Archived", state: { name: "Todo", type: "unstarted" }, archivedAt: "2026-01-01T00:00:00Z" },
+];
+const linTools = {
     // Answers with every assigned issue, done and archived ones included: HandsFree must drop those itself.
     list_issues: {
       inputSchema: { properties: { assignee: {}, state: { type: "string" }, query: {}, limit: {} } },
-      handler: () =>
-        linText({
-          issues: [
-            { id: "uuid-1", identifier: "ENG-7", title: "Add greeting", description: "Say hi", url: "https://linear.app/x/ENG-7", state: { name: "Todo", type: "unstarted" } },
-            { id: "uuid-0", identifier: "ENG-6", title: "Shipped long ago", state: { name: "Done", type: "completed" } },
-            { id: "uuid-9", identifier: "ENG-9", title: "Archived", state: { name: "Todo", type: "unstarted" }, archivedAt: "2026-01-01T00:00:00Z" },
-          ],
-        }),
+      handler: () => linText({ issues: linIssues }),
     },
     create_comment: { inputSchema: { properties: { issueId: {}, body: {} } }, handler: (a) => linText({ ok: true, got: a }) },
     update_issue: { inputSchema: { properties: { id: {}, state: {} } }, handler: (a) => linText({ ok: true, got: a }) },
-  },
-});
+};
+const linMcp = await startFakeMcp({ validTokens: linTokens, tools: linTools });
 const cbPort = 49000 + Math.floor(Math.random() * 500);
 
 const port = 48000 + Math.floor(Math.random() * 1000);
@@ -592,13 +588,31 @@ try {
   await waitFor(async () => (await ticket("ENG-7")).trackerDone === true, "ENG-7 trackerDone");
   assert.deepEqual(linMcp.calls.find((c) => c.params?.name === "update_issue").params.arguments, { id: "uuid-1", state: "Done" });
 
+  // ---- A Linear server without update_issue: the merge is handled, and the ticket log says why the status didn't move
+  delete linTools.update_issue;
+  linIssues.push({ id: "uuid-8", identifier: "ENG-8", title: "Add farewell", url: "https://linear.app/x/ENG-8", state: { name: "Todo", type: "unstarted" } });
+  // A changed account setting rebuilds the Linear connection, so the tool list is fetched again.
+  const cfgL2 = await api("/api/config");
+  await api("/api/config", "PUT", { ...cfgL2, settings: { ...cfgL2.settings, accounts: { ...cfgL2.settings.accounts, linear: { ...cfgL2.settings.accounts.linear, scopes: "read write issues:create" } } } });
+  await api("/api/poll-now", "POST");
+  const eng8 = await waitFor(async () => {
+    const t = await ticket("ENG-8");
+    return t?.status === "pr_draft" && t.jiraCommented && t;
+  }, "ENG-8 pr_draft + commented");
+  prJson(Number(eng8.prUrl.split("/").pop()), { state: "MERGED", isDraft: false, mergedAt: "2026-10-15T13:00:00Z" });
+  await checkPrs();
+  await waitFor(async () => /· Linear issue: Linear has no update_issue tool; status left as is/.test((await api("/api/tickets/ENG-8/log")).log), "ENG-8 skip reason logged");
+  const eng8After = await ticket("ENG-8");
+  assert.equal(eng8After.status, "merged");
+  assert.notEqual(eng8After.trackerDone, true);
+
   const doc = await api("/api/doctor");
   assert.ok(doc.find((d) => d.name === "gh").ok);
 
   console.log("\n✅ e2e passed");
 } catch (e) {
   console.error("\n❌ e2e failed:", e.stack || e.message);
-  for (const k of ["DEMO-1", "DEMO-2", "repo#5", "ENG-7"]) {
+  for (const k of ["DEMO-1", "DEMO-2", "repo#5", "ENG-7", "ENG-8"]) {
     try {
       console.error(`--- log ${k} ---\n` + fs.readFileSync(path.join(data, "logs", `${k.replace(/[^A-Za-z0-9_-]/g, "_")}.log`), "utf8"));
     } catch {}

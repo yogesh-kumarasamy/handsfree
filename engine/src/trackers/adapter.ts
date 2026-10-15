@@ -4,14 +4,23 @@ import type { FoundIssue, ProjectConfig, Ticket, TrackerKind } from "../types";
 
 export type TicketRef = Pick<Ticket, "key" | "trackerId">;
 
+/**
+ * `skipped` with a `reason`: the tracker couldn't do it (logged on the ticket). `skipped` without one: the project
+ * asked for nothing (no done status, comment command "-").
+ */
+export interface StepResult {
+  skipped: boolean;
+  reason?: string;
+}
+
 export interface TrackerAdapter {
   readonly kind: TrackerKind;
   /** "Jira ticket" / "GitHub issue" / "Linear issue" — for prompts and logs. */
   readonly noun: string;
   search(): Promise<FoundIssue[]>;
-  comment(t: TicketRef, body: string): Promise<{ skipped: boolean }>;
-  /** Move to `status`; `skipped` when there is no status or the tracker can't. */
-  transition(t: TicketRef, status: string): Promise<{ skipped: boolean }>;
+  comment(t: TicketRef, body: string): Promise<StepResult>;
+  /** Move to `status`; `skipped` when there is no status or the tracker can't (then with a `reason`). */
+  transition(t: TicketRef, status: string): Promise<StepResult>;
 }
 
 /** The project fields a tracker reads. */

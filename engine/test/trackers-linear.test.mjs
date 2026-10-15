@@ -50,7 +50,9 @@ test("LinearTracker: list_my_issues fallback, issue arg name, missing update_iss
     assert.equal((await l.search())[0].key, "ENG-7");
     await l.comment({ key: "ENG-7", trackerId: "uuid-1" }, "x");
     assert.deepEqual(mcp.calls.find((c) => c.params?.name === "create_comment").params.arguments, { issue: "uuid-1", body: "x" });
-    assert.deepEqual(await l.transition({ key: "ENG-7", trackerId: "uuid-1" }, "Done"), { skipped: true });
+    const skipped = await l.transition({ key: "ENG-7", trackerId: "uuid-1" }, "Done");
+    assert.equal(skipped.skipped, true);
+    assert.match(skipped.reason, /update_issue/, "a skip says why");
   } finally {
     await mcp.close();
   }
@@ -117,6 +119,26 @@ test("LinearTracker: no status and no filter → refused before any network call
   try {
     await assert.rejects(mk(mcp, { query: "", linearState: "" }).search(), /Set a status or a filter for Linear/);
     assert.equal(mcp.calls.length, 0);
+  } finally {
+    await mcp.close();
+  }
+});
+
+test("LinearTracker: skip reasons — no create_comment tool, update_issue without a state argument; '-' comment command skips silently", async () => {
+  const mcp = await startFakeMcp({
+    validTokens: new Set(["t"]),
+    tools: { list_my_issues: toolsB.list_my_issues, update_issue: { inputSchema: { properties: { id: {}, title: {} } }, handler: () => ({ content: [] }) } },
+  });
+  try {
+    const l = mk(mcp);
+    const c = await l.comment({ key: "ENG-7", trackerId: "uuid-1" }, "x");
+    assert.equal(c.skipped, true);
+    assert.match(c.reason, /create_comment/);
+    const t = await l.transition({ key: "ENG-7", trackerId: "uuid-1" }, "Done");
+    assert.equal(t.skipped, true);
+    assert.match(t.reason, /update_issue has no state argument/);
+    assert.deepEqual(await mk(mcp, { commentCommand: "-" }).comment({ key: "ENG-7", trackerId: "uuid-1" }, "x"), { skipped: true });
+    assert.equal(mcp.calls.filter((c) => c.params?.name === "create_comment" || c.params?.name === "update_issue").length, 0);
   } finally {
     await mcp.close();
   }
