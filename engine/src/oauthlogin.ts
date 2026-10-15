@@ -36,6 +36,8 @@ interface Pending {
 
 export class LoopbackLogin {
   private current?: Pending;
+  /** A login being set up (client, discovery, listen): a second click joins it instead of starting another. */
+  private starting?: Promise<string>;
   /** State of the login that just succeeded: a late duplicate callback for it is answered kindly, not as an error. */
   private completedState?: string;
 
@@ -50,12 +52,15 @@ export class LoopbackLogin {
   }
 
   /** Start a login (or return the one in progress): listens on the loopback port and returns the authorize URL. */
-  async loginUrl(): Promise<string> {
-    if (this.current) return this.current.url;
+  loginUrl(): Promise<string> {
+    if (this.current) return Promise.resolve(this.current.url);
+    this.starting ||= this.startLogin().finally(() => (this.starting = undefined));
+    return this.starting;
+  }
+
+  private async startLogin(): Promise<string> {
     const client = await this.o.clientId();
     const meta = await discover(this.o.issuer(), this.o.fetchImpl);
-    // A concurrent click may have started the login while we awaited.
-    if (this.current) return (this.current as Pending).url;
     const { verifier, challenge } = pkce();
     const state = randomState();
     const port = this.o.redirectPort();

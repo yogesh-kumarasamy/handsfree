@@ -126,3 +126,21 @@ test("LoopbackLogin: text from the server is HTML-escaped on the callback page",
     await auth.close();
   }
 });
+
+test("LoopbackLogin: two quick Log in clicks → one registration, one listening server, the same URL", async () => {
+  const auth = await startFakeAuth();
+  try {
+    var a = makeLogin(auth);
+    const [u1, u2] = await Promise.all([a.login.loginUrl(), a.login.loginUrl()]);
+    assert.equal(u1, u2);
+    assert.equal(auth.registrations.length, 1);
+    assert.equal(a.login.pending, true);
+    // the one server answers the callback
+    const cb = (await fetch(u1, { redirect: "manual" })).headers.get("location");
+    assert.equal((await fetch(cb)).status, 200);
+    assert.equal(a.statuses.at(-1).loggedIn, true);
+  } finally {
+    a?.login.shutdown();
+    await auth.close();
+  }
+});
