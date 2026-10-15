@@ -284,3 +284,8 @@ a.link:hover { text-decoration: underline; }
 
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35); display: flex; align-items: center; justify-content: center; z-index: 50; }
 .modal { width: min(640px, 92vw); max-height: 85vh; overflow: auto; }
+
+/* Routines (project step + dashboard card) */
+.routine-card { margin-bottom: 12px; }
+.routine-card.disabled { opacity: 0.6; }
+.routine-status { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; }

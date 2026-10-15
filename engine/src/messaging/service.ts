@@ -225,4 +225,14 @@ export class MessagingService {
   shutdown() {
     this.login.shutdown();
   }
+
+  /** Post free text to a project's channel without a ticket (routines). Throws on failure. */
+  async postToProject(p: ProjectConfig, text: string, kind: MessageKind, idempotencyKey: string): Promise<{ id?: string }> {
+    const adapter = this.adapter(p);
+    if (!adapter) throw new Error(`No messaging platform is set for “${p.name}” (project → Messaging).`);
+    if (!p.messaging.channelId) throw new Error(`Choose a channel in the Messaging step of “${p.name}”.`);
+    const r = await adapter.send(p.messaging.channelId, text, idempotencyKey);
+    this.deps.log("routine", `💬 ${kind} posted to ${p.messaging.channelName || p.messaging.channelId} for ${p.name}\n`);
+    return r;
+  }
 }

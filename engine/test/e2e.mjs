@@ -58,6 +58,8 @@ script("fakeopen", `cp "$1" "${root}/opened.command"`);
 script("fakeslow", `echo "SESSION: abc-12345678"; echo "thinking…"; sleep 60`);
 // messaging agent fake: prints Claude's JSON envelope and records the prompt
 script("fakemsg", `echo "$@" >> "${root}/msg.log"; echo '{"type":"result","is_error":false,"result":"ok\\n{\\"sent\\": true, \\"id\\": \\"agent-1\\"}"}'`);
+// routine agent fake: records its prompt, optionally slow, prints Claude's JSON envelope with a known report
+script("fakeroutine", `echo "$@" >> "${root}/routine.log"; if [ -f "${root}/ROUTINE_SLOW" ]; then sleep 3; fi; echo '{"type":"result","is_error":false,"result":"Open PRs: 2 — 1 awaiting review, 1 draft"}'`);
 // agent 1: edits a file, then dies on a rate limit
 script("fakegrok", `echo "working on $HANDSFREE_ISSUE"; echo "partial" > partial.txt; echo "Error: 429 rate limit exceeded" >&2; exit 1`);
 // agent 2: sees the previous work, commits
@@ -112,7 +114,7 @@ const cbPort = 49000 + Math.floor(Math.random() * 500);
 const port = 48000 + Math.floor(Math.random() * 1000);
 const token = "test-token";
 const engine = spawn(process.execPath, [path.resolve("engine/dist/handsfree-engine.mjs")], {
-  env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, HF_DATA: data, HF_PORT: String(port), HF_TOKEN: token, HF_SKIP_LOGIN_PATH: "1", HF_OPEN_CMD: "fakeopen" },
+  env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, HF_DATA: data, HF_PORT: String(port), HF_TOKEN: token, HF_SKIP_LOGIN_PATH: "1", HF_OPEN_CMD: "fakeopen", HF_TEST: "1" },
   stdio: ["pipe", "inherit", "inherit"],
 });
 const base = `http://127.0.0.1:${port}`;
@@ -264,6 +266,45 @@ try {
   const login2 = await api("/api/accounts/setmore/login", "POST", {});
   await fetch((await fetch(login2.url, { redirect: "manual" })).headers.get("location"));
   await waitFor(async () => (await api("/api/accounts/setmore")).loggedIn, "logged in again");
+
+  // ---- Routines: Run now posts the agent's report to the channel; test-only tick runs a due routine; no overlap
+  const REPORT = "Open PRs: 2 — 1 awaiting review, 1 draft";
+  // A schedule that never fires during the run: the 30 s engine tick must not add runs of its own.
+  project.routines = [{ id: "rt1", name: "PR check", enabled: true, schedule: "0 0 1 1 *", prompt: "Report {project} {repo} {last_run}", agentCommand: "fakeroutine {prompt}", postToChannel: true, timeoutMin: 1 }];
+  await api("/api/config", "PUT", { ...(await api("/api/config")), projects: [project] });
+  const rtNext = (await api("/api/state")).routines.rt1.nextRunAt;
+  assert.ok(rtNext, "routine scheduled");
+  const sentBefore = mcp.received.length;
+  assert.deepEqual(await api("/api/routines/rt1/run", "POST", {}), {});
+  const rtLast = await waitFor(async () => {
+    const st = (await api("/api/state")).routines.rt1;
+    return st && !st.running && st.last?.endedAt && st.last;
+  }, "routine run finished");
+  assert.equal(rtLast.ok, true, rtLast.output);
+  assert.equal(rtLast.output, REPORT);
+  assert.equal(rtLast.posted, true, rtLast.postError);
+  assert.equal(mcp.received.length, sentBefore + 1);
+  assert.equal(mcp.received.at(-1).text, REPORT);
+  assert.equal(mcp.received.at(-1).channelId, "ch-core");
+  assert.equal(mcp.received.at(-1).idempotencyKey, `routine:rt1:${rtLast.startedAt}`);
+  const rtPrompts = () => fs.readFileSync(path.join(root, "routine.log"), "utf8").trim().split("\n");
+  assert.match(rtPrompts()[0], /^Report Demo .+ the beginning$/);
+  assert.match((await api("/api/routines/rt1/log")).log, /✓ PR check finished/);
+  assert.match((await api("/api/routines/nope/run", "POST", {})).error, /Unknown routine/);
+  // the scheduled slot comes due: the test-only tick at that instant runs it once
+  assert.deepEqual(await api("/api/routines/tick", "POST", { now: rtNext }), {});
+  await waitFor(async () => mcp.received.length === sentBefore + 2, "scheduled routine posted");
+  assert.equal(rtPrompts().length, 2);
+  assert.doesNotMatch(rtPrompts()[1], /the beginning/, "{last_run} is the previous successful run");
+  const rtAfter = (await api("/api/state")).routines.rt1;
+  assert.ok(Date.parse(rtAfter.nextRunAt) > Date.parse(rtNext), "rescheduled after the slot");
+  // a second Run now while one is running is refused
+  fs.writeFileSync(path.join(root, "ROUTINE_SLOW"), "");
+  assert.deepEqual(await api("/api/routines/rt1/run", "POST", {}), {});
+  assert.match((await api("/api/routines/rt1/run", "POST", {})).error, /already running/);
+  await waitFor(async () => mcp.received.length === sentBefore + 3, "slow routine posted");
+  fs.rmSync(path.join(root, "ROUTINE_SLOW"));
+  await waitFor(async () => !(await api("/api/state")).routines.rt1.running, "slow routine finished");
 
   // ---- Paused: CI failure is recorded, no fix queued, and nothing marks the SHA as handled
   await api("/api/pause", "POST");
@@ -612,7 +653,7 @@ try {
   console.log("\n✅ e2e passed");
 } catch (e) {
   console.error("\n❌ e2e failed:", e.stack || e.message);
-  for (const k of ["DEMO-1", "DEMO-2", "repo#5", "ENG-7", "ENG-8"]) {
+  for (const k of ["DEMO-1", "DEMO-2", "repo#5", "ENG-7", "ENG-8", "routine-rt1"]) {
     try {
       console.error(`--- log ${k} ---\n` + fs.readFileSync(path.join(data, "logs", `${k.replace(/[^A-Za-z0-9_-]/g, "_")}.log`), "utf8"));
     } catch {}

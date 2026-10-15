@@ -20,11 +20,16 @@ import {
   type MessagingConfig,
   type MessagingPlatform,
   type ProjectConfig,
+  DEFAULT_ROUTINE_COMMAND,
+  ROUTINE_PRESETS,
+  type EngineState,
+  type RoutineConfig,
   type TrackerConfig,
   type TrackerKind,
 } from "../../engine/src/types";
+import { describeCron, parseCron } from "../../engine/src/routines/cron";
 import { pickFolder, type Api, type RepoInfo } from "../api";
-import { Icon, Toggle } from "../ui";
+import { ago, Icon, Toggle, until } from "../ui";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -55,6 +60,7 @@ function blankProject(): ProjectConfig {
     ciFixMaxRounds: 2,
     mergeNudgeAfterMin: 30,
     messaging: { platform: "none", channelId: "", channelName: "", templates: { ...DEFAULT_TEMPLATES }, agentCommand: DEFAULT_AGENT_MESSAGE_COMMAND },
+    routines: [],
   };
 }
 
@@ -64,12 +70,14 @@ export function Projects({
   editing,
   setEditing,
   initialStep,
+  state,
 }: {
   api: Api;
   config: Config;
   editing: string | null;
   setEditing: (id: string | null) => void;
   initialStep?: number;
+  state?: EngineState;
 }) {
   const save = async (projects: ProjectConfig[]) => {
     await api.saveConfig({ ...config, projects });
@@ -83,6 +91,7 @@ export function Projects({
         initial={existing || blankProject()}
         isNew={!existing}
         initialStep={initialStep}
+        state={state}
         onCancel={() => setEditing(null)}
         onSave={async (p) => {
           const exists = config.projects.some((x) => x.id === p.id);
@@ -164,7 +173,10 @@ export function Projects({
   );
 }
 
-const STEPS = ["Repository", "Tracker", "MCP servers", "Agent chain", "Messaging", "Review"];
+const STEPS = ["Repository", "Tracker", "MCP servers", "Agent chain", "Messaging", "Routines", "Review"];
+const ROUTINES = STEPS.indexOf("Routines");
+/** Always the last step: computed so steps added before it don't shift a literal. */
+const REVIEW = STEPS.length - 1;
 
 const TRACKER_LABEL: Record<TrackerKind, string> = { jira: "Jira", github: "GitHub Issues", linear: "Linear" };
 const TRACKER_INTRO: Record<TrackerKind, string> = {
@@ -187,11 +199,13 @@ function ProjectEditor({
   onCancel,
   onSave,
   onDelete,
+  state,
 }: {
   api: Api;
   initial: ProjectConfig;
   isNew: boolean;
   initialStep?: number;
+  state?: EngineState;
   onCancel: () => void;
   onSave: (p: ProjectConfig) => Promise<void>;
   onDelete?: () => void;
@@ -278,6 +292,7 @@ function ProjectEditor({
     mcpError && "MCP JSON is invalid",
     enabledAgents.length === 0 && "Enable at least one agent with a command",
     p.messaging.platform !== "none" && !p.messaging.channelId && "Pick a collab channel (Messaging step)",
+    p.routines.some((r) => parseCron(r.schedule) instanceof Error) && "Fix the routine schedule(s)",
   ].filter(Boolean) as string[];
 
   const setAgent = (id: string, patch: Partial<AgentConfig>) => set({ agents: p.agents.map((a) => (a.id === id ? { ...a, ...patch } : a)) });
@@ -306,7 +321,7 @@ function ProjectEditor({
       <div className="page-head">
         <div>
           <h1 className="page-title">{isNew ? "New project" : p.name}</h1>
-          <div className="page-sub">{isNew ? "Six quick steps. It starts picking up tickets as soon as you save." : "Changes apply from the next ticket."}</div>
+          <div className="page-sub">{isNew ? "A few quick steps. It starts picking up tickets as soon as you save." : "Changes apply from the next ticket."}</div>
         </div>
         <div className="row">
           {onDelete && <button className="btn ghost danger" onClick={onDelete}>Delete</button>}
@@ -640,7 +655,9 @@ function ProjectEditor({
           </>
         )}
 
-        {step === 5 && (
+        {step === ROUTINES && <RoutinesStep api={api} p={p} set={set} state={state} saved={isNew ? [] : initial.routines.map((r) => r.id)} />}
+
+        {step === REVIEW && (
           <>
             <h3 className="card-title">Review</h3>
             <p className="card-sub">Once saved, HandsFree runs this tracker query on the next poll and starts working.</p>
@@ -664,6 +681,8 @@ function ProjectEditor({
               <dt>Pull requests</dt><dd>{p.draftPr ? "Draft" : "Ready for review"}, PR link commented on the {TRACKER_NOUN[p.tracker.kind]}{p.tracker.commentCommand.trim() === "-" ? " (commenting off)" : ""}</dd>
               <dt>Messaging</dt>
               <dd>{p.messaging.platform === "none" ? "off" : `${p.messaging.platform === "setmore" ? "Setmore collab" : "agent"} → ${p.messaging.channelName || p.messaging.channelId || "no channel"}`}</dd>
+              <dt>Routines</dt>
+              <dd>{p.routines.length === 0 ? "none" : p.routines.map((r) => `${r.name}${r.enabled ? "" : " (off)"} · ${cronText(r.schedule)}`).join(" · ")}</dd>
               <dt>After the PR</dt>
               <dd>
                 {p.ciAutoFix ? `CI failures fixed automatically, up to ${p.ciFixMaxRounds} round${p.ciFixMaxRounds === 1 ? "" : "s"}` : "CI failures only shown"} · nudge after {p.mergeNudgeAfterMin} min approved · worktree removed on merge, merge commented on the ticket
@@ -698,5 +717,143 @@ function ProjectEditor({
         )}
       </div>
     </div>
+  );
+}
+
+function cronText(schedule: string) {
+  const spec = parseCron(schedule);
+  return spec instanceof Error ? `invalid: ${spec.message}` : describeCron(spec, schedule);
+}
+
+function RoutinesStep({
+  api,
+  p,
+  set,
+  state,
+  saved,
+}: {
+  api: Api;
+  p: ProjectConfig;
+  set: (patch: Partial<ProjectConfig>) => void;
+  state?: EngineState;
+  /** Routine ids the engine already knows (saved config); only those can Run now. */
+  saved: string[];
+}) {
+  const [result, setResult] = useState<Record<string, { ok: boolean; text: string }>>({});
+  const setRoutine = (id: string, patch: Partial<RoutineConfig>) => set({ routines: p.routines.map((r) => (r.id === id ? { ...r, ...patch } : r)) });
+  const add = (name: string) => {
+    const preset = ROUTINE_PRESETS.find((x) => x.name === name);
+    const r: RoutineConfig = preset
+      ? { ...preset, id: uid() }
+      : { id: uid(), name: "Custom routine", enabled: true, schedule: "0 10 * * 1-5", prompt: "", agentCommand: "", postToChannel: true, timeoutMin: 15 };
+    set({ routines: [...p.routines, r] });
+  };
+  const runNow = async (id: string) => {
+    try {
+      await api.runRoutine(id);
+      setResult((x) => ({ ...x, [id]: { ok: true, text: "Started — the result shows below when it finishes." } }));
+    } catch (e) {
+      setResult((x) => ({ ...x, [id]: { ok: false, text: String((e as Error).message || e) } }));
+    }
+  };
+  return (
+    <>
+      <h3 className="card-title">Routines</h3>
+      <p className="card-sub">
+        Scheduled agent runs for this project — a daily PR report, a Sentry check — whose final text is posted to the project's collab channel
+        {p.messaging.platform === "none" ? " (no messaging platform yet: results stay in HandsFree)" : ""}. Optional.
+      </p>
+      {!p.enabled && p.routines.length > 0 && (
+        <div className="callout warn" style={{ marginBottom: 12 }}><span className="t">Paused with the project: routines don't run while the project is Off.</span></div>
+      )}
+      {p.routines.map((r) => {
+        const spec = parseCron(r.schedule);
+        const st = state?.routines?.[r.id];
+        const isSaved = saved.includes(r.id);
+        const res = result[r.id];
+        return (
+          <div key={r.id} className={`card card-pad routine-card ${r.enabled ? "" : "disabled"}`}>
+            <div className="row" style={{ marginBottom: 10 }}>
+              <input className="input" style={{ maxWidth: 260, fontWeight: 600 }} value={r.name} onChange={(e) => setRoutine(r.id, { name: e.target.value })} />
+              <Toggle on={r.enabled} title={r.enabled ? "Turn this routine off" : "Turn this routine on"} onChange={(v) => setRoutine(r.id, { enabled: v })} />
+              <div className="spacer" />
+              <button
+                className="btn sm"
+                disabled={!isSaved || st?.running || !p.enabled}
+                title={!p.enabled ? "Paused with the project" : isSaved ? "Run it now, ignoring the schedule" : "Save the project first"}
+                onClick={() => runNow(r.id)}
+              >
+                {st?.running ? "Running…" : "Run now"}
+              </button>
+              <button
+                className="btn ghost sm danger"
+                onClick={() => confirm(`Delete routine “${r.name}”?`) && set({ routines: p.routines.filter((x) => x.id !== r.id) })}
+              >
+                Delete
+              </button>
+            </div>
+            <div className="field">
+              <label>Schedule (cron, local time)</label>
+              <input className="input code" style={{ maxWidth: 260 }} value={r.schedule} onChange={(e) => setRoutine(r.id, { schedule: e.target.value })} />
+              {spec instanceof Error ? <span className="hint err-text">{spec.message}</span> : <span className="hint">{describeCron(spec, r.schedule)}</span>}
+            </div>
+            <div className="field">
+              <label>Prompt</label>
+              <textarea className="textarea" rows={6} value={r.prompt} onChange={(e) => setRoutine(r.id, { prompt: e.target.value })} />
+              <span className="hint">Placeholders: <span className="mono">{"{project} {repo} {repo_path} {channel} {now} {last_run} {last_run_human}"}</span>. The agent's final text is the report.</span>
+            </div>
+            <details>
+              <summary className="small muted" style={{ cursor: "pointer" }}>Advanced</summary>
+              <div className="field" style={{ marginTop: 8 }}>
+                <label className="small">Agent command</label>
+                <input className="input code" value={r.agentCommand} placeholder={DEFAULT_ROUTINE_COMMAND} onChange={(e) => setRoutine(r.id, { agentCommand: e.target.value })} />
+                <span className="hint">
+                  <span className="mono">{"{prompt}"}</span> is filled in. Must print Claude's <span className="mono">--output-format json</span> envelope. Runs in the repo. List the
+                  tools the prompt needs with <span className="mono">--allowedTools</span> (the presets do); nothing is pre-approved otherwise. Opt into
+                  <span className="mono"> --dangerously-skip-permissions</span> yourself only if you accept that the agent can run anything.
+                </span>
+              </div>
+              <div className="row" style={{ gap: 18 }}>
+                <label className="row small">
+                  <Toggle on={r.postToChannel} onChange={(v) => setRoutine(r.id, { postToChannel: v })} /> Post the result to the collab channel
+                </label>
+                <label className="row small">
+                  Timeout
+                  <input className="input" type="number" min={1} max={120} style={{ width: 70 }} value={r.timeoutMin} onChange={(e) => setRoutine(r.id, { timeoutMin: Number(e.target.value) || 15 })} />
+                  min
+                </label>
+              </div>
+            </details>
+            <div className="routine-status small muted">
+              <span>Next run: {r.enabled && st?.nextRunAt ? until(st.nextRunAt) : "—"}</span>
+              <span>
+                Last run:{" "}
+                {st?.last ? (
+                  <>
+                    {ago(st.last.startedAt)} <span className={`pill ${st.running ? "wait" : st.last.ok ? "ok" : "bad"}`}>{st.running ? "running" : st.last.ok ? "ok" : "failed"}</span>{" "}
+                    {(st.last.output || "").split("\n")[0].slice(0, 120)}
+                  </>
+                ) : (
+                  "never"
+                )}
+              </span>
+            </div>
+            {res && <div className={`callout ${res.ok ? "info" : "err"}`} style={{ marginTop: 8 }}><span className="t">{res.text}</span></div>}
+          </div>
+        );
+      })}
+      <div className="row" style={{ marginBottom: 8 }}>
+        <select className="select" style={{ maxWidth: 240 }} value="" onChange={(e) => add(e.target.value)}>
+          <option value="" disabled>+ Add routine…</option>
+          {ROUTINE_PRESETS.map((x) => <option key={x.name} value={x.name}>{x.name}</option>)}
+          <option value="__custom">Custom…</option>
+        </select>
+      </div>
+      <div className="callout info">
+        <span className="t">
+          The Sentry check uses your claude.ai Sentry connector in Claude Code: run <span className="mono">claude</span>, type <span className="mono">/mcp</span> and authenticate Sentry once.
+        </span>
+      </div>
+    </>
   );
 }

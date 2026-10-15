@@ -110,3 +110,14 @@ test("sendBulk with text across projects: {list} must stay in the text so each p
   assert.doesNotMatch(sent[0].text, /B-1/);
   assert.match(sent[1].text, /^Custom intro:\n- B-1/);
 });
+
+test("postToProject: sends free text with the given idempotency key, no ticket; throws without platform or channel", async () => {
+  const sent = [];
+  const { svc, state } = makeService(sent);
+  const r = await svc.postToProject(proj("a", "agent"), "3 open PRs", "routine", "routine:r1:2026");
+  assert.deepEqual(sent, [{ project: "a", ch: "ch-a", text: "3 open PRs", key: "routine:r1:2026" }]);
+  assert.equal(r.id, "m-1");
+  assert.equal(state.tickets["A-1"].messages, undefined, "no ticket record");
+  await assert.rejects(svc.postToProject(proj("c", "none"), "x", "routine", "k"), /No messaging platform/);
+  await assert.rejects(svc.postToProject(proj("a", "agent", ""), "x", "routine", "k"), /Choose a channel/);
+});

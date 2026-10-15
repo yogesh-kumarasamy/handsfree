@@ -157,7 +157,7 @@ export default function App() {
           />
         )}
         {view === "projects" && (
-          <Projects api={api} config={config} editing={editing} setEditing={setEditing} initialStep={demo?.editorStep} />
+          <Projects api={api} config={config} editing={editing} setEditing={setEditing} initialStep={demo?.editorStep} state={state} />
         )}
         {view === "settings" && <SettingsView api={api} config={config} />}
       </main>

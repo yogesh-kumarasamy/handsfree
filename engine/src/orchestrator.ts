@@ -6,10 +6,11 @@ import { failedCheckLogs, fetchPr, openPr, publishPr } from "./github";
 import { ClientStore, TokenStore } from "./messaging/oauth";
 import { MessagingService } from "./messaging/service";
 import { PrEvents } from "./prevents";
+import { RoutineService } from "./routines/service";
 import { buildFixPrompt, mergeNudgeDue, nextStatus, shouldAutoFix, toPrInfo, type RawPr } from "./prstate";
 import { exec, fill, q, SHELL, start, type Running } from "./shell";
 import { TrackerService } from "./trackers/service";
-import { DATA_DIR, loadConfig, loadState, logFile, normalizeProject, normalizeSettings, saveConfig, saveState } from "./store";
+import { DATA_DIR, loadConfig, loadState, logFile, normalizeProject, normalizeSettings, routineLogFile, saveConfig, saveState } from "./store";
 import {
   CLAUDE_RESUME,
   PR_STATUSES,
@@ -52,6 +53,15 @@ export class Orchestrator {
     emit: (e) => this.emit(e),
     tokens: new TokenStore(path.join(DATA_DIR, "auth", "setmore.json")),
   });
+  /** Scheduled agent runs per project (roadmap item 5); logs go to LOG_DIR/routine-<id>.log, not a ticket log. */
+  routines = new RoutineService({
+    config: () => this.config,
+    state: () => this.state,
+    persist: () => this.persist(),
+    log: (id, chunk) => fs.appendFileSync(routineLogFile(id), chunk),
+    notify: (t, b) => this.notify(t, b, "info"),
+    messaging: this.messaging,
+  });
   /** Ticket trackers (Jira / GitHub Issues / Linear) and the Linear account. */
   trackers = new TrackerService({
     config: () => this.config,
@@ -78,6 +88,7 @@ export class Orchestrator {
     this.prEvents.on((e) => this.onPrEvent(e));
     this.prEvents.on((e) => void this.messaging.onPrEvent(e));
     this.messaging.init();
+    this.routines.start();
     this.trackers.init();
     this.schedulePoll(3000);
     this.schedulePrCheck(5000);
@@ -124,6 +135,15 @@ export class Orchestrator {
     }
   }
 
+  readRoutineLog(id: string, max = 300_000) {
+    try {
+      const s = fs.readFileSync(routineLogFile(id), "utf8");
+      return s.length > max ? s.slice(-max) : s;
+    } catch {
+      return "";
+    }
+  }
+
   // ---------- config ----------
   updateConfig(next: Config) {
     const prevInterval = this.config.settings.pollIntervalMin;
@@ -136,6 +156,7 @@ export class Orchestrator {
     };
     // Account settings (client id, URLs) may have changed: the next messaging call builds a fresh adapter.
     this.messaging.settingsChanged();
+    this.routines.configChanged();
     this.trackers.settingsChanged();
     saveConfig(this.config);
     this.emit({ type: "config", config: this.config });
@@ -831,6 +852,7 @@ export class Orchestrator {
   }
   shutdown() {
     this.messaging.shutdown();
+    this.routines.shutdown();
     this.trackers.shutdown();
     clearTimeout(this.prTimer);
     for (const r of this.running.values()) r?.kill();
