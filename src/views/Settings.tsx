@@ -22,7 +22,7 @@ export function SettingsView({ api, config }: { api: Api; config: Config }) {
     void runDoctor();
   }, []);
 
-  const num = (key: "pollIntervalMin" | "maxParallel" | "agentTimeoutMin" | "slowAfterMin", min: number, max: number) => (
+  const num = (key: "pollIntervalMin" | "prPollIntervalMin" | "maxParallel" | "agentTimeoutMin" | "slowAfterMin", min: number, max: number) => (
     <input
       className="input num-input"
       type="number"
@@ -51,6 +51,10 @@ export function SettingsView({ api, config }: { api: Api; config: Config }) {
         <div className="setting-row">
           <div className="txt"><b>Check Jira every</b><span>How often each project's JQL is run.</span></div>
           {num("pollIntervalMin", 1, 240)}<span className="muted">min</span>
+        </div>
+        <div className="setting-row">
+          <div className="txt"><b>Check PRs every</b><span>How often open PRs are checked on GitHub for CI, reviews and merges.</span></div>
+          {num("prPollIntervalMin", 1, 60)}<span className="muted">min</span>
         </div>
         <div className="setting-row">
           <div className="txt"><b>Max parallel tickets</b><span>Worktrees with an agent running at the same time, across all projects.</span></div>

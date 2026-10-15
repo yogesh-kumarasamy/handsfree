@@ -298,6 +298,30 @@ function ProjectEditor({
                 </div>
               </div>
             </div>
+            <h3 className="card-title" style={{ marginTop: 22 }}>After the PR opens</h3>
+            <p className="card-sub">HandsFree keeps checking the PR on GitHub (Settings → <i>Check PRs every</i>).</p>
+            <div className="grid3">
+              <div className="field">
+                <label>CI fails</label>
+                <div className="row" style={{ height: 34 }}>
+                  <Toggle on={p.ciAutoFix} onChange={(v) => set({ ciAutoFix: v })} />
+                  <span>{p.ciAutoFix ? "Agents fix it in the same worktree" : "Just show it as failing"}</span>
+                </div>
+              </div>
+              <div className="field">
+                <label>Max automatic fix rounds</label>
+                <input className="input num-input" type="number" min={0} max={5} value={p.ciFixMaxRounds} onChange={(e) => set({ ciFixMaxRounds: Math.min(5, Math.max(0, Number(e.target.value) || 0)) })} />
+                <span className="hint">Per PR. “Fix CI” on the dashboard always works.</span>
+              </div>
+              <div className="field">
+                <label>Approved but not merged after</label>
+                <div className="row">
+                  <input className="input num-input" type="number" min={5} max={1440} value={p.mergeNudgeAfterMin} onChange={(e) => set({ mergeNudgeAfterMin: Math.min(1440, Math.max(5, Number(e.target.value) || 30)) })} />
+                  <span className="muted">min</span>
+                </div>
+                <span className="hint">Then HandsFree nudges you (and, later, the team).</span>
+              </div>
+            </div>
           </>
         )}
 
@@ -445,7 +469,10 @@ function ProjectEditor({
                 ))}
               </dd>
               <dt>Pull requests</dt><dd>{p.draftPr ? "Draft" : "Ready for review"}, PR link commented on the Jira ticket</dd>
-              <dt>Cleanup</dt><dd>Worktree removed after the PR is merged or closed</dd>
+              <dt>After the PR</dt>
+              <dd>
+                {p.ciAutoFix ? `CI failures fixed automatically, up to ${p.ciFixMaxRounds} round${p.ciFixMaxRounds === 1 ? "" : "s"}` : "CI failures only shown"} · nudge after {p.mergeNudgeAfterMin} min approved · worktree removed on merge, merge commented on the ticket
+              </dd>
             </dl>
             {problems.length > 0 && (
               <div className="callout warn" style={{ marginTop: 16 }}>
