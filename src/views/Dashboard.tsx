@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Config, EngineState, ProjectConfig, Ticket, TicketStatus } from "../../engine/src/types";
+import { PR_STATUSES, type Config, type EngineState, type ProjectConfig, type Ticket, type TicketStatus } from "../../engine/src/types";
 import { openExternal, type Api } from "../api";
 import { ago, duration, Icon, Logo, StatusBadge, until, useTick } from "../ui";
 
-const ORDER: TicketStatus[] = ["running", "manual", "failed", "stopped", "queued", "pr_open", "done"];
+const ORDER: TicketStatus[] = ["running", "manual", "failed", "stopped", "queued", "pr_ci_failed", "pr_draft", "pr_ready", "pr_approved", "merged", "done"];
 
 export function Dashboard({
   api,
@@ -26,7 +26,7 @@ export function Dashboard({
   const tickets = useMemo(
     () =>
       Object.values(state.tickets)
-        .filter((t) => showDone || t.status !== "done")
+        .filter((t) => showDone || (t.status !== "done" && t.status !== "merged"))
         .sort((a, b) => ORDER.indexOf(a.status) - ORDER.indexOf(b.status) || b.updatedAt.localeCompare(a.updatedAt)),
     [state, showDone],
   );
@@ -72,7 +72,7 @@ export function Dashboard({
         </div>
         <div className="card stat">
           <div className="stat-label"><span className="dot" style={{ color: "var(--violet)" }} /> Draft PRs open</div>
-          <div className="stat-value">{n("pr_open")}</div>
+          <div className="stat-value">{n("pr_draft") + n("pr_ready") + n("pr_ci_failed")}</div>
         </div>
         <div className="card stat">
           <div className="stat-label"><span className="dot" style={{ color: "var(--red)" }} /> Needs attention</div>
@@ -169,11 +169,11 @@ function TicketDetail({ api, ticket, project, onClose }: { api: Api; ticket: Tic
   };
   const open = () => run(() => api.open(ticket.key), (r) => `Opened Terminal · ${r.command}`);
   const openLabel =
-    ticket.status === "running" ? "👀 Open live" : ticket.status === "manual" ? "⌨ Reopen session" : ticket.status === "pr_open" ? "⌨ Open in Terminal" : "⌨ Take over";
+    ticket.status === "running" ? "👀 Open live" : ticket.status === "manual" ? "⌨ Reopen session" : PR_STATUSES.includes(ticket.status) ? "⌨ Open in Terminal" : "⌨ Take over";
   const openHint =
     ticket.status === "running"
       ? "See the agent working in Terminal. Press Enter there to take over and talk to it."
-      : ticket.status === "pr_open"
+      : PR_STATUSES.includes(ticket.status)
         ? "Open the worktree and the last agent session in Terminal"
         : "Continue the last agent's session in Terminal, in this ticket's worktree";
 

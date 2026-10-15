@@ -6,14 +6,14 @@ import { openPr, prState } from "./github";
 import { commentOnIssue, searchIssues } from "./jira";
 import { exec, fill, q, SHELL, start, type Running } from "./shell";
 import { loadConfig, loadState, logFile, normalizeProject, saveConfig, saveState } from "./store";
-import { CLAUDE_RESUME, type AgentConfig, type Attempt, type Config, type EngineEvent, type EngineState, type NotifyKind, type ProjectConfig, type Ticket } from "./types";
+import { CLAUDE_RESUME, PR_STATUSES, type AgentConfig, type Attempt, type Config, type EngineEvent, type EngineState, type NotifyKind, type ProjectConfig, type Ticket } from "./types";
 
 const now = () => new Date().toISOString();
 const TAIL_FOR_PATTERNS = 6000;
 
 export class Orchestrator {
   config: Config = loadConfig();
-  state: EngineState = loadState();
+  state: EngineState = loadState(this.config);
   private listeners = new Set<(e: EngineEvent) => void>();
   private running = new Map<string, Running | null>();
   private stopRequested = new Set<string>();
@@ -138,7 +138,7 @@ export class Orchestrator {
   }
 
   private async checkMergedPrs() {
-    for (const t of Object.values(this.state.tickets).filter((x) => x.status === "pr_open" && x.prUrl)) {
+    for (const t of Object.values(this.state.tickets).filter((x) => PR_STATUSES.includes(x.status) && x.prUrl)) {
       const p = this.project(t.projectId);
       if (!p) continue;
       const s = await prState(p.repoPath, t.prUrl!);
@@ -248,7 +248,7 @@ export class Orchestrator {
       const body = prBody(t, lastOk?.agentName || winner?.name || "agent", this.readLog(t.key, 20_000));
       const url = await openPr(p, t, body);
       this.log(t.key, `✓ ${p.draftPr ? "Draft PR" : "PR"} ${url}\n`);
-      this.touch(t, { prUrl: url, status: "pr_open", agentIndex: 0 });
+      this.touch(t, { prUrl: url, status: p.draftPr ? "pr_draft" : "pr_ready", agentIndex: 0 });
       this.notify(`Draft PR ready · ${t.key}`, t.summary, "pr");
     } catch (e) {
       return this.fail(t, `Agents finished, but opening the PR failed: ${(e as Error).message}. Retry will only redo this step.`);
@@ -438,7 +438,7 @@ export class Orchestrator {
     const t = this.state.tickets[key];
     if (!t) throw new Error("Unknown ticket");
     if (this.running.has(key)) return this.openTerminal(key, undefined, "live");
-    if (t.status === "pr_open" || t.status === "done") return this.openTerminal(key, undefined, "resume");
+    if (PR_STATUSES.includes(t.status) || t.status === "merged" || t.status === "done") return this.openTerminal(key, undefined, "resume");
     return this.takeOver(key);
   }
 

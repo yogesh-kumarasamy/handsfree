@@ -29,6 +29,9 @@ function blankProject(): ProjectConfig {
     agents: AGENT_PRESETS.map((a) => ({ ...a, id: uid(), exhaustionPatterns: [...a.exhaustionPatterns] })),
     promptExtra: "",
     draftPr: true,
+    ciAutoFix: true,
+    ciFixMaxRounds: 2,
+    mergeNudgeAfterMin: 30,
   };
 }
 

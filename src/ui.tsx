@@ -46,10 +46,14 @@ const LABEL: Record<TicketStatus, string> = {
   queued: "Queued",
   running: "Running",
   manual: "With you",
-  pr_open: "PR open",
   failed: "Failed",
   stopped: "Stopped",
-  done: "Done",
+  pr_draft: "Draft PR",
+  pr_ready: "Ready for review",
+  pr_ci_failed: "CI failing",
+  pr_approved: "Approved",
+  merged: "Merged",
+  done: "Closed",
 };
 
 export function StatusBadge({ status }: { status: TicketStatus }) {

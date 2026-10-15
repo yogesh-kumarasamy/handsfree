@@ -36,10 +36,18 @@ export interface ProjectConfig {
   /** Extra instructions appended to every prompt for this project. */
   promptExtra: string;
   draftPr: boolean;
+  /** When CI fails on the PR, run the agent chain in the same worktree with the failing logs. */
+  ciAutoFix: boolean;
+  /** Automatic CI fix rounds per PR before the ticket needs you (0..5). Manual "Fix CI" ignores this. */
+  ciFixMaxRounds: number;
+  /** Minutes an approved PR may wait before HandsFree raises a merge nudge (5..1440). */
+  mergeNudgeAfterMin: number;
 }
 
 export interface Settings {
   pollIntervalMin: number;
+  /** How often open PRs are checked on GitHub (1..60 min). */
+  prPollIntervalMin: number;
   maxParallel: number;
   agentTimeoutMin: number;
   /** Flag a running agent as slow (and notify) after this many minutes. */
@@ -55,8 +63,80 @@ export interface Config {
   projects: ProjectConfig[];
 }
 
-/** "manual" = you took over; HandsFree leaves it alone until you hand it back. */
-export type TicketStatus = "queued" | "running" | "manual" | "pr_open" | "failed" | "stopped" | "done";
+/**
+ * Work phase: queued → running → (manual | failed | stopped).
+ * PR phase: pr_draft | pr_ready | pr_ci_failed | pr_approved → merged | done.
+ * "manual" = you took over. "done" = PR closed without merge (and legacy tickets).
+ * A CI fix in progress is "running" with `ticket.fix` set.
+ */
+export type TicketStatus =
+  | "queued"
+  | "running"
+  | "manual"
+  | "failed"
+  | "stopped"
+  | "pr_draft"
+  | "pr_ready"
+  | "pr_ci_failed"
+  | "pr_approved"
+  | "merged"
+  | "done";
+
+/** Statuses with an open PR that the PR check keeps polling. */
+export const PR_STATUSES: readonly TicketStatus[] = ["pr_draft", "pr_ready", "pr_ci_failed", "pr_approved"];
+
+export type CiStatus = "none" | "pending" | "passing" | "failing";
+
+export interface FailedCheck {
+  name: string;
+  detailsUrl?: string;
+  /** GitHub Actions run id parsed from detailsUrl, when it is an Actions job. */
+  runId?: string;
+}
+
+export interface PrInfo {
+  url: string;
+  number: number;
+  draft: boolean;
+  state: "open" | "merged" | "closed";
+  headSha: string;
+  ci: CiStatus;
+  failedChecks: FailedCheck[];
+  reviewDecision: "" | "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED";
+  /** Newest approving review's submittedAt from GitHub. Cleared if the decision changes. */
+  approvedAt?: string;
+  mergedAt?: string;
+  /** Set when the review_ready event fired. Once per PR. */
+  reviewRequestedAt?: string;
+  /** Set when the merge_nudge event fired. Once per PR. */
+  mergeNudgedAt?: string;
+  /** Completed CI-fix rounds on this PR. */
+  fixRounds: number;
+  /** Head SHA the last fix round was started for; prevents re-fixing the same failure. */
+  lastFixSha?: string;
+  checkedAt: string;
+}
+
+export interface FixContext {
+  /** 1-based. */
+  round: number;
+  /** The failing commit. */
+  headSha: string;
+  failedChecks: FailedCheck[];
+  /** Trimmed failing-step logs. */
+  logs: string;
+  requestedAt: string;
+}
+
+export type PrEventKind = "review_ready" | "merge_nudge" | "merged" | "ci_fix_exhausted";
+
+export interface PrEvent {
+  kind: PrEventKind;
+  key: string;
+  prUrl: string;
+  projectId: string;
+  at: string;
+}
 
 export type AttemptOutcome = "success" | "exhausted" | "failed" | "no_changes" | "timeout" | "stopped" | "taken_over";
 
@@ -85,6 +165,10 @@ export interface Ticket {
   currentAgent?: string;
   attempts: Attempt[];
   prUrl?: string;
+  /** What GitHub last told us about the PR. Absent until the first PR check. */
+  pr?: PrInfo;
+  /** Present while a CI fix is queued or running. */
+  fix?: FixContext;
   /** Set while the current agent has run longer than settings.slowAfterMin. */
   slow?: boolean;
   jiraCommented?: boolean;
@@ -98,6 +182,10 @@ export interface EngineState {
   lastPollAt?: string;
   nextPollAt?: string;
   pollErrors: Record<string, string>;
+  lastPrCheckAt?: string;
+  nextPrCheckAt?: string;
+  /** Per ticket key: the last `gh` error from the PR check. */
+  prCheckErrors: Record<string, string>;
 }
 
 export interface FoundIssue {

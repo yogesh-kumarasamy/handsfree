@@ -1,6 +1,7 @@
 import type { Api, DemoOptions } from "./api";
 import {
   AGENT_PRESETS,
+  PR_STATUSES,
   DEFAULT_JIRA_COMMENT,
   DEFAULT_JIRA_SEARCH,
   type Config,
@@ -22,6 +23,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
     version: 1,
     settings: {
       pollIntervalMin: 15,
+      prPollIntervalMin: 3,
       maxParallel: 3,
       agentTimeoutMin: 90,
       slowAfterMin: 30,
@@ -56,6 +58,9 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
               agents: agents(["Claude Code", "Grok", "Antigravity"]),
               promptExtra: "Use pnpm. Run `pnpm test` and `pnpm lint` before committing.",
               draftPr: true,
+              ciAutoFix: true,
+              ciFixMaxRounds: 2,
+              mergeNudgeAfterMin: 30,
             },
             {
               id: "p2",
@@ -71,6 +76,9 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
               agents: agents(["Grok", "Claude Code"]),
               promptExtra: "",
               draftPr: true,
+              ciAutoFix: true,
+              ciFixMaxRounds: 2,
+              mergeNudgeAfterMin: 30,
             },
           ],
   };
@@ -90,7 +98,7 @@ function t(p: Partial<Ticket> & Pick<Ticket, "key" | "projectId" | "summary" | "
 }
 
 function demoState(scenario: DemoOptions["scenario"]): EngineState {
-  if (scenario === "empty") return { tickets: {}, pollErrors: {} };
+  if (scenario === "empty") return { tickets: {}, pollErrors: {}, prCheckErrors: {} };
   const list: Ticket[] = [
     t({
       key: "CSW-1421",
@@ -131,7 +139,7 @@ function demoState(scenario: DemoOptions["scenario"]): EngineState {
       key: "CSW-1398",
       projectId: "p1",
       summary: "Fix unread badge not clearing on mobile Safari",
-      status: "pr_open",
+      status: "pr_draft",
       prUrl: "https://github.com/anywhere/chatsupport-web/pull/2211",
       jiraCommented: true,
       attempts: [{ agentName: "Claude Code", startedAt: ago(190), endedAt: ago(151), exitCode: 0, outcome: "success" }],
@@ -142,7 +150,7 @@ function demoState(scenario: DemoOptions["scenario"]): EngineState {
       key: "SET-975",
       projectId: "p2",
       summary: "Add pagination to GET /v2/customers",
-      status: "pr_open",
+      status: "pr_draft",
       prUrl: "https://github.com/anywhere/setmore-api/pull/877",
       jiraCommented: true,
       attempts: [{ agentName: "Grok", startedAt: ago(260), endedAt: ago(232), exitCode: 0, outcome: "success" }],
@@ -179,6 +187,7 @@ function demoState(scenario: DemoOptions["scenario"]): EngineState {
     lastPollAt: ago(6),
     nextPollAt: new Date(Date.now() + 9 * 60_000).toISOString(),
     pollErrors: {},
+    prCheckErrors: {},
   };
 }
 
@@ -240,7 +249,7 @@ export function createMockApi(opts: DemoOptions): Api {
     open: async (k) => {
       const t = state.tickets[k];
       if (t?.status === "running") return { command: "live view · press Enter in Terminal to take over" };
-      if (t && t.status !== "pr_open" && t.status !== "done") {
+      if (t && !PR_STATUSES.includes(t.status) && t.status !== "merged" && t.status !== "done") {
         state = { ...state, tickets: { ...state.tickets, [k]: { ...t, status: "manual", slow: undefined, currentAgent: undefined } } };
         emit({ type: "state", state });
       }

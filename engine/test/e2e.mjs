@@ -73,7 +73,7 @@ const project = {
   promptExtra: "Be nice.",
   draftPr: true,
 };
-fs.writeFileSync(path.join(data, "config.json"), JSON.stringify({ version: 1, settings: { pollIntervalMin: 60, maxParallel: 1, agentTimeoutMin: 5, paused: false, notifications: true, launchAtLogin: false }, projects: [project] }));
+fs.writeFileSync(path.join(data, "config.json"), JSON.stringify({ version: 1, settings: { pollIntervalMin: 60, prPollIntervalMin: 60, maxParallel: 1, agentTimeoutMin: 5, paused: false, notifications: true, launchAtLogin: false }, projects: [project] }));
 
 const port = 48000 + Math.floor(Math.random() * 1000);
 const token = "test-token";
@@ -111,7 +111,7 @@ try {
   // first poll happens ~3s after start
   const s1 = await waitFor(async () => {
     const s = await api("/api/state");
-    return s.tickets["DEMO-1"]?.status === "pr_open" && s;
+    return s.tickets["DEMO-1"]?.status === "pr_draft" && s;
   }, "DEMO-1 pr_open");
   const t1 = s1.tickets["DEMO-1"];
   assert.deepEqual(t1.attempts.map((a) => [a.agentName, a.outcome]), [["Grok", "exhausted"], ["Claude Code", "success"]]);
@@ -143,10 +143,10 @@ try {
   assert.match(launcher, new RegExp(`cd '${wt}'`));
   assert.ok(launcher.includes(`\nclaude --resume 'sess-1234-abcd' --mcp-config '${mcpAbs}'\n`));
   assert.match(launcher, /git status --short/);
-  assert.equal((await api("/api/state")).tickets["DEMO-1"].status, "pr_open", "opening a PR'd ticket doesn't take it over");
+  assert.equal((await api("/api/state")).tickets["DEMO-1"].status, "pr_draft", "opening a PR'd ticket doesn't take it over");
 
   // maxParallel=1 → DEMO-2 runs after DEMO-1
-  await waitFor(async () => (await api("/api/state")).tickets["DEMO-2"]?.status === "pr_open", "DEMO-2 pr_open");
+  await waitFor(async () => (await api("/api/state")).tickets["DEMO-2"]?.status === "pr_draft", "DEMO-2 pr_open");
 
   // a ticket that is already known is not picked up again
   await api("/api/poll-now", "POST");
@@ -211,7 +211,7 @@ try {
   await api("/api/tickets/DEMO-2/handback", "POST", { mode: "pr" });
   const handed = await waitFor(async () => {
     const t = (await api("/api/state")).tickets["DEMO-2"];
-    return t.status === "pr_open" && t;
+    return t.status === "pr_draft" && t;
   }, "DEMO-2 pr_open after hand back");
   assert.deepEqual(handed.attempts.map((a) => [a.agentName, a.outcome]), [["Sleepy", "taken_over"], ["You", "success"]]);
   assert.match(sh(`git log --oneline main..handsfree/DEMO-2`, remote), /DEMO-2/, "your change was committed and pushed");
