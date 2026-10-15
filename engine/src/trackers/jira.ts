@@ -1,4 +1,5 @@
 // Jira through the Atlassian CLI (`acli`), using the login already on the Mac.
+import { issueTypeOf } from "../naming";
 import { fill } from "../shell";
 import { DEFAULT_JIRA_COMMENT, DEFAULT_JIRA_SEARCH, DEFAULT_JIRA_TRANSITION, TRACKER_NOUN, type FoundIssue } from "../types";
 import { defaultRun, failure, type Run, type TicketRef, type TrackerAdapter, type TrackerProject } from "./adapter";
@@ -25,11 +26,14 @@ export function parseIssues(output: string): FoundIssue[] {
       const f = o.fields || {};
       const summary = f.summary ?? o.summary ?? "";
       const d = f.description ?? o.description;
-      found.set(o.key, {
+      const issue: FoundIssue = {
         key: o.key,
         summary: String(summary),
         description: d ? (typeof d === "string" ? d : adfToText(d)).trim() || undefined : undefined,
-      });
+      };
+      const typeName = f.issuetype?.name ?? o.issuetype?.name;
+      if (typeof typeName === "string" && typeName.trim()) issue.type = issueTypeOf(typeName);
+      found.set(o.key, issue);
       return;
     }
     Object.values(o).forEach(visit);

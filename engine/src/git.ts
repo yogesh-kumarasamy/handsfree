@@ -39,13 +39,22 @@ export async function ensureWorktree(project: ProjectConfig, t: Ticket): Promise
   const repo = project.repoPath;
   await git(repo, ["rev-parse", "--show-toplevel"]);
   await ensureExcluded(repo);
-  if (fs.existsSync(t.worktree) && (await tryGit(t.worktree, ["rev-parse", "--is-inside-work-tree"])) === "true") {
-    return `reusing worktree ${t.worktree}`;
-  }
   const fetched = await exec("git", ["fetch", project.remote, project.baseBranch], { cwd: repo, timeoutMs: 180_000 });
   const remoteRef = `${project.remote}/${project.baseBranch}`;
   const hasRemote = (await tryGit(repo, ["rev-parse", "--verify", "--quiet", remoteRef])) !== undefined;
   const baseRef = hasRemote ? remoteRef : project.baseBranch;
+  if (fs.existsSync(t.worktree) && (await tryGit(t.worktree, ["rev-parse", "--is-inside-work-tree"])) === "true") {
+    // A retry keeps the agent's partial work. A fresh pick-up (e.g. after Forget) must not inherit a forgotten
+    // run's commits or its old branch name, so it starts the ticket's branch again from base.
+    if (!t.prUrl && t.attempts.length === 0) {
+      await git(t.worktree, ["reset", "-q", "--hard"]);
+      await git(t.worktree, ["clean", "-fdq"]);
+      await git(t.worktree, ["checkout", "-q", "-B", t.branch, baseRef]);
+      t.baseRef = baseRef;
+      return `reusing worktree ${t.worktree}, reset to ${baseRef}`;
+    }
+    return `reusing worktree ${t.worktree}`;
+  }
   // A ticket with a PR continues its pushed branch (e.g. the worktree was cleaned up and CI now fails).
   // A ticket without one is fresh work and starts from base, even if an old branch of the same name is still on the remote.
   // Trust the remote-tracking ref only when the fetch succeeds: a stale ref outlives a deleted remote branch.
@@ -86,6 +95,50 @@ export async function commitAll(wt: string, message: string) {
   await git(wt, ["add", "-A"]);
   const r = await exec("git", ["commit", "-m", message], { cwd: wt, timeoutMs: 300_000 });
   if (r.code !== 0) await git(wt, ["commit", "--no-verify", "-m", message]);
+}
+
+/**
+ * Rewrite the subject line of every commit in `range` (e.g. "origin/main..HEAD") for which `conform` returns a
+ * different subject. Bodies and trailers are kept. Returns how many commits changed. Nothing runs when none would.
+ */
+export async function rewordCommits(wt: string, range: string, conform: (subject: string) => string): Promise<number> {
+  const list = (await tryGit(wt, ["log", "--reverse", "--format=%H%x00%s", range])) || "";
+  const map: Record<string, string> = {};
+  for (const line of list.split("\n").filter(Boolean)) {
+    const [sha, subject] = line.split("\0");
+    const next = conform(subject);
+    if (next !== subject) map[sha] = next;
+  }
+  const n = Object.keys(map).length;
+  if (!n) return 0;
+  const dir = path.join(wt, ".handsfree");
+  fs.mkdirSync(dir, { recursive: true });
+  const mapFile = path.join(dir, "reword.json");
+  const script = path.join(dir, "reword.mjs");
+  fs.writeFileSync(mapFile, JSON.stringify(map));
+  // filter-branch feeds each message on stdin with GIT_COMMIT set; swap the first line when this commit is in the map.
+  fs.writeFileSync(
+    script,
+    [
+      'import fs from "node:fs";',
+      "const map = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));",
+      "const msg = fs.readFileSync(0, 'utf8');",
+      "const next = map[process.env.GIT_COMMIT];",
+      "process.stdout.write(next === undefined ? msg : next + msg.slice(msg.indexOf('\\n') === -1 ? msg.length : msg.indexOf('\\n')));",
+    ].join("\n"),
+  );
+  const filter = `${JSON.stringify(process.execPath)} ${JSON.stringify(script)} ${JSON.stringify(mapFile)}`;
+  const r = await exec("git", ["filter-branch", "-f", "--msg-filter", filter, range], {
+    cwd: wt,
+    timeoutMs: 300_000,
+    env: { FILTER_BRANCH_SQUELCH_WARNING: "1" },
+  });
+  if (r.code !== 0) throw new Error(`git filter-branch: ${(r.stderr || r.stdout).trim().slice(0, 500)}`);
+  // filter-branch keeps backups under refs/original/; drop them so they don't confuse later worktree operations.
+  await tryGit(wt, ["for-each-ref", "--format=%(refname)", "refs/original/"]).then(async (refs) => {
+    for (const ref of (refs || "").split("\n").filter(Boolean)) await tryGit(wt, ["update-ref", "-d", ref]);
+  });
+  return n;
 }
 
 export async function commitsAhead(wt: string, baseRef: string) {

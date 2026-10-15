@@ -63,7 +63,15 @@ Other commands: `npm run test:engine` (engine e2e test), `npm run engine` (engin
 6. **After the PR.** The dashboard groups tickets into *In progress*, *Pull requests*, *Approved, not merged* and *Merged*. **Publish** marks a draft ready (`gh pr ready`); publishing in the GitHub UI is picked up on the next check (Settings → *Check PRs every*, default 3 min). When CI fails, HandsFree fetches the failing step logs (`gh run view --log-failed`) and runs the agent chain again in the same worktree, up to the project's *Max automatic fix rounds*; **Fix CI** starts a round by hand. Approved PRs that wait longer than the project's limit raise a nudge. Merged PRs get their worktree removed, the ticket moved to the project's done status, and a comment on the ticket.
 7. **Messaging.** Settings → *Accounts*: paste the Setmore `client_id` from the auth team and press **Log in** (browser sign-in; tokens stay on this Mac). In each project's *Messaging* step pick the platform (Setmore collab, or an agent run with your own MCP connectors), load and pick the channel, and edit the four templates. HandsFree then posts "please review" when CI passes on a published PR and "waiting to be merged" when an approved PR sits past the project's delay — once each. **Send to collab** on a PR (or a selection of PRs) sends the prefilled, editable text; every send is listed in the ticket detail.
 
-Agents are told to commit but not push. HandsFree commits anything left uncommitted, pushes `handsfree/<KEY>`, opens the PR with `gh`, and comments the link on the ticket. The only status change HandsFree makes is the move to the done status on merge.
+Agents are told to commit but not push. HandsFree commits anything left uncommitted, pushes the ticket's branch, opens the PR with `gh`, and comments the link on the ticket. The only status change HandsFree makes is the move to the done status on merge.
+
+### Naming conventions
+
+Each project (Repository step → *Naming conventions*) has a **template** and an optional **pattern** (regex) for the branch, the commit subject and the PR title. Templates know `{key}`, `{summary}`, `{slug}` (kebab-cased summary), `{type}` (from the ticket's issue type or labels: `bug`, `feature`, `spike`, `improvement`, `hotfix`, `refactor`, `config`) and `{type_cc}` (its conventional-commit twin: `fix`, `feat`, …). Defaults are HandsFree's classic `handsfree/{key}` and `{key}: {summary}` with no patterns.
+
+- The branch is rendered at pick-up and checked before the worktree is created; the PR title is checked at the same time. A name that fails its pattern stops the ticket with the reason, so a GitHub naming check never sees it. Fix the rules and press **Retry**.
+- HandsFree's own commits use the commit template. The agent is told the pattern with a rendered example; any of its commit subjects that still don't match are reworded to the template before the push (bodies and trailers are kept; already-pushed commits are left alone).
+- **Use Anywhere rules** fills in the branch and commit regexes that Anywhere's `conventionsbot` GitHub check enforces, with `{key}/{type}/{slug}` and `{type_cc}: {key} {summary}`.
 
 ### Routines
 

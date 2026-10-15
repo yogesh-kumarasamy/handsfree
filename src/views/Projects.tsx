@@ -27,9 +27,63 @@ import {
   type TrackerConfig,
   type TrackerKind,
 } from "../../engine/src/types";
+import { ANYWHERE_NAMING, checkName, DEFAULT_NAMING, type NamingConfig, type NamingRule } from "../../engine/src/naming";
 import { describeCron, parseCron } from "../../engine/src/routines/cron";
 import { pickFolder, type Api, type RepoInfo } from "../api";
 import { ago, Icon, Toggle, until } from "../ui";
+
+/** A ticket to preview the naming templates with; the key shape matches what trackers hand out. */
+const NAMING_SAMPLE = { key: "ABC-123", summary: "Add greeting to the README", type: "bug" };
+const NAMING_ROWS: { k: keyof NamingConfig; label: string; hint: string }[] = [
+  { k: "branch", label: "Branch", hint: "Created at pick-up. {type} comes from the ticket's issue type or labels (bug, feature, spike, improvement…)." },
+  { k: "commit", label: "Commit subject", hint: "Used for HandsFree's own commits and told to the agent. Agent commits that don't match the pattern are reworded to the template before the push." },
+  { k: "prTitle", label: "PR title", hint: "Checked before the PR is opened." },
+];
+
+/** The first naming rule whose template can't satisfy its own pattern (or whose regex is invalid), as a sentence; "" when all is well. */
+function namingProblem(naming: NamingConfig): string {
+  for (const row of NAMING_ROWS) {
+    const r = checkName(naming[row.k], NAMING_SAMPLE);
+    if (!r.ok) return `${row.label} naming: ${r.error}`;
+  }
+  return "";
+}
+
+function NamingCard({ naming, onChange }: { naming: NamingConfig; onChange: (n: NamingConfig) => void }) {
+  const setRule = (k: keyof NamingConfig, patch: Partial<NamingRule>) => onChange({ ...naming, [k]: { ...naming[k], ...patch } });
+  const copy = (n: NamingConfig): NamingConfig => ({ branch: { ...n.branch }, commit: { ...n.commit }, prTitle: { ...n.prTitle } });
+  return (
+    <>
+      <h3 className="card-title" style={{ marginTop: 22 }}>Naming conventions</h3>
+      <p className="card-sub">
+        How HandsFree names what it creates, and what each name must match. Templates know <span className="mono">{"{key}"}</span> <span className="mono">{"{summary}"}</span>{" "}
+        <span className="mono">{"{slug}"}</span> <span className="mono">{"{type}"}</span> <span className="mono">{"{type_cc}"}</span> (feat/fix…). A name that fails its pattern stops the ticket before CI ever sees it.
+      </p>
+      <div className="row" style={{ marginBottom: 12 }}>
+        <button className="btn sm" onClick={() => onChange(copy(ANYWHERE_NAMING))}>Use Anywhere rules (conventionsbot)</button>
+        <button className="btn sm ghost" onClick={() => onChange(copy(DEFAULT_NAMING))}>Reset to HandsFree defaults</button>
+      </div>
+      {NAMING_ROWS.map((row) => {
+        const r = checkName(naming[row.k], NAMING_SAMPLE);
+        return (
+          <div className="field" key={row.k}>
+            <label>{row.label}</label>
+            <div className="grid2">
+              <input className="input code" placeholder="Template" value={naming[row.k].template} onChange={(e) => setRule(row.k, { template: e.target.value })} />
+              <input className="input code" placeholder="Pattern (regex, optional)" value={naming[row.k].pattern} onChange={(e) => setRule(row.k, { pattern: e.target.value })} />
+            </div>
+            <span className={r.ok ? "hint" : "err-text"} style={{ fontSize: 12 }}>
+              {r.ok ? "✓ " : "✗ "}
+              <span className="mono">{r.value}</span>
+              {r.ok ? "" : ` — ${r.error}`}
+            </span>
+            <span className="hint">{row.hint}</span>
+          </div>
+        );
+      })}
+    </>
+  );
+}
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -55,6 +109,7 @@ function blankProject(): ProjectConfig {
     mcpJson: '{\n  "mcpServers": {}\n}',
     agents: AGENT_PRESETS.map((a) => ({ ...a, id: uid(), exhaustionPatterns: [...a.exhaustionPatterns] })),
     promptExtra: "",
+    naming: { branch: { ...DEFAULT_NAMING.branch }, commit: { ...DEFAULT_NAMING.commit }, prTitle: { ...DEFAULT_NAMING.prTitle } },
     draftPr: true,
     ciAutoFix: true,
     ciFixMaxRounds: 2,
@@ -290,6 +345,7 @@ function ProjectEditor({
     p.tracker.kind !== "linear" && !p.tracker.query.trim() && (p.tracker.kind === "jira" ? "Add a JQL" : "Add a tracker query"),
     p.tracker.kind === "linear" && !p.tracker.query.trim() && !p.tracker.linearState.trim() && "Set a Linear status or a text filter",
     mcpError && "MCP JSON is invalid",
+    namingProblem(p.naming),
     enabledAgents.length === 0 && "Enable at least one agent with a command",
     p.messaging.platform !== "none" && !p.messaging.channelId && "Pick a collab channel (Messaging step)",
     p.routines.some((r) => parseCron(r.schedule) instanceof Error) && "Fix the routine schedule(s)",
@@ -375,6 +431,7 @@ function ProjectEditor({
                 </div>
               </div>
             </div>
+            <NamingCard naming={p.naming} onChange={(naming) => set({ naming })} />
             <h3 className="card-title" style={{ marginTop: 22 }}>After the PR opens</h3>
             <p className="card-sub">HandsFree keeps checking the PR on GitHub (Settings → <i>Check PRs every</i>).</p>
             <div className="grid3">

@@ -1,4 +1,5 @@
 // Pure helpers for the PR lifecycle: no I/O, so they are unit-tested without `gh`.
+import { commitRule } from "./naming";
 import type { CiStatus, FailedCheck, FixContext, PrInfo, ProjectConfig, Ticket, TicketStatus } from "./types";
 
 /** One entry of `gh pr view --json statusCheckRollup`: a CheckRun (Actions) or a StatusContext (external CI). */
@@ -160,8 +161,8 @@ export function trimFailedLogs(parts: { name: string; detailsUrl?: string; log?:
 }
 
 export function buildFixPrompt(
-  p: Pick<ProjectConfig, "baseBranch" | "promptExtra">,
-  t: Pick<Ticket, "key" | "summary" | "branch" | "baseRef" | "prUrl" | "description" | "attempts">,
+  p: Pick<ProjectConfig, "baseBranch" | "promptExtra" | "naming">,
+  t: Pick<Ticket, "key" | "summary" | "type" | "branch" | "baseRef" | "prUrl" | "description" | "attempts">,
   fix: FixContext,
 ) {
   const prev = t.attempts.filter((a) => a.endedAt && Date.parse(a.startedAt) >= Date.parse(fix.requestedAt || "0"));
@@ -185,7 +186,7 @@ export function buildFixPrompt(
     `- You are in a git worktree on branch \`${t.branch}\`, based on \`${t.baseRef || p.baseBranch}\`. The PR for this branch is already open. Only change files here.`,
     "- Fix the failing checks. Reproduce the failure locally where possible, then run the project's tests and linters and make them pass.",
     "- Do not revert or rewrite unrelated work on this branch; the earlier commits are the feature. Build on them.",
-    `- Commit with clear messages starting with "${t.key}: fix CI —". Do NOT push and do NOT touch the pull request — HandsFree pushes after you finish.`,
+    `- ${commitRule(p.naming.commit, { key: t.key, summary: t.summary, type: t.type }, `Commit with clear messages starting with "${t.key}: fix CI —".`)} Do NOT push and do NOT touch the pull request — HandsFree pushes after you finish.`,
     "- Nobody is watching. Don't ask questions or wait for input; make reasonable assumptions and list them at the end.",
     "- Ignore the `.handsfree/` folder.",
     "- Finish with a short summary: what was failing, what you changed, and how you verified it.",

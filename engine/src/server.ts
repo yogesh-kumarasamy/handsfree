@@ -1,4 +1,5 @@
 import http from "node:http";
+import os from "node:os";
 import { repoInfo } from "./git";
 import type { Orchestrator } from "./orchestrator";
 import { exec, SHELL } from "./shell";
@@ -14,14 +15,17 @@ async function doctor(o: Orchestrator) {
   for (const p of o.config.projects) for (const a of p.agents) if (a.enabled && a.command.trim()) names.add(a.command.trim().split(/\s+/)[0]);
   const items = await Promise.all(
     [...names].map(async (name) => {
-      const found = await exec(SHELL, ["-c", `command -v ${name.replace(/[^\w./-]/g, "")}`], { timeoutMs: 5000 });
+      // Probes run in a scratch folder: an agent tool is whatever the user configured, and the engine's own
+      // cwd is a real checkout in dev/test (a probe that touches files must not land there).
+      const cwd = os.tmpdir();
+      const found = await exec(SHELL, ["-c", `command -v ${name.replace(/[^\w./-]/g, "")}`], { timeoutMs: 5000, cwd });
       if (found.code !== 0) return { name, ok: false, detail: "Not found on PATH" };
       if (name === "gh") {
-        const auth = await exec("gh", ["auth", "status"], { timeoutMs: 15000 });
+        const auth = await exec("gh", ["auth", "status"], { timeoutMs: 15000, cwd });
         const out = (auth.stdout + auth.stderr).split("\n").map((l) => l.trim()).find((l) => /Logged in/i.test(l));
         return { name, ok: auth.code === 0, detail: auth.code === 0 ? out?.replace(/^✓\s*/, "") || "Logged in" : "Not logged in — run `gh auth login`" };
       }
-      const v = await exec(name, ["--version"], { timeoutMs: 10000 });
+      const v = await exec(name, ["--version"], { timeoutMs: 10000, cwd });
       const line = (v.stdout || v.stderr).trim().split("\n")[0];
       return { name, ok: true, detail: line || found.stdout.trim() };
     }),

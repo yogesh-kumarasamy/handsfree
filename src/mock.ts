@@ -1,4 +1,5 @@
 import type { Api, DemoOptions } from "./api";
+import { ANYWHERE_NAMING, DEFAULT_NAMING } from "../engine/src/naming";
 import {
   AGENT_PRESETS,
   DEFAULT_AGENT_MESSAGE_COMMAND,
@@ -62,6 +63,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
               ),
               agents: agents(["Claude Code", "Grok", "Antigravity"]),
               promptExtra: "Use pnpm. Run `pnpm test` and `pnpm lint` before committing.",
+              naming: ANYWHERE_NAMING,
               draftPr: true,
               ciAutoFix: true,
               ciFixMaxRounds: 2,
@@ -80,6 +82,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
               mcpJson: '{\n  "mcpServers": {}\n}',
               agents: agents(["Grok", "Claude Code"]),
               promptExtra: "",
+              naming: DEFAULT_NAMING,
               draftPr: true,
               ciAutoFix: true,
               ciFixMaxRounds: 2,

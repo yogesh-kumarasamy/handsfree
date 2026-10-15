@@ -88,6 +88,20 @@ test("normalizeProject: the old Claude preset command is upgraded to the stream-
   );
 });
 
+test("normalizeProject: naming defaults to HandsFree's old names with no patterns; partial configs are filled in", () => {
+  const p = normalizeProject({ id: "p1" });
+  assert.deepEqual(p.naming, {
+    branch: { template: "handsfree/{key}", pattern: "" },
+    commit: { template: "{key}: {summary}", pattern: "" },
+    prTitle: { template: "{key}: {summary}", pattern: "" },
+  });
+  const q = normalizeProject({ id: "p1", naming: { branch: { template: "{key}/{type}/{slug}", pattern: "^X" } } });
+  assert.deepEqual(q.naming.branch, { template: "{key}/{type}/{slug}", pattern: "^X" });
+  assert.deepEqual(q.naming.commit, { template: "{key}: {summary}", pattern: "" });
+  const r = normalizeProject({ id: "p1", naming: { branch: { template: "   ", pattern: "" } } });
+  assert.equal(r.naming.branch.template, "handsfree/{key}", "a blank template falls back to the default");
+});
+
 test("normalizeProject: a customised Claude command is left alone", () => {
   const custom = "claude -p {prompt} --model opus --output-format stream-json --verbose";
   const p = normalizeProject({ id: "p1", agents: [{ id: "a", name: "Claude Code", command: custom }] });

@@ -3,6 +3,7 @@
 import { McpClient, McpError, toolJson } from "../messaging/mcpclient";
 import type { ClientStore, TokenStore } from "../messaging/oauth";
 import { TokenKeeper } from "../messaging/tokens";
+import { issueTypeOf, labelNames } from "../naming";
 import { TRACKER_NOUN, type AccountStatus, type FoundIssue, type LinearAccountSettings } from "../types";
 import type { StepResult, TicketRef, TrackerAdapter, TrackerProject } from "./adapter";
 
@@ -107,6 +108,8 @@ function toIssues(raw: any[], o: { doneStatus: string; states: string[] }): Foun
     if (typeof i.description === "string" && i.description.trim()) issue.description = i.description;
     issue.id = typeof i.id === "string" || typeof i.id === "number" ? String(i.id) : i.identifier;
     if (typeof i.url === "string") issue.url = i.url;
+    const labels = labelNames(i.labels);
+    if (labels.length) issue.type = issueTypeOf(labels);
     out.push(issue);
   }
   return out;

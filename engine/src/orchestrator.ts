@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { changedFiles, commitAll, commitsAhead, ensureWorktree, hasUncommitted, headSha, push, removeWorktree, syncWithRemote, worktreePath } from "./git";
+import { changedFiles, commitAll, commitsAhead, ensureWorktree, hasUncommitted, headSha, push, removeWorktree, rewordCommits, syncWithRemote, worktreePath } from "./git";
+import { checkName, commitRule, conformSubject, DEFAULT_NAMING, renderName, type NameVars } from "./naming";
 import { createStreamFormatter } from "./streamfmt";
 import { failedCheckLogs, fetchPr, openPr, publishPr } from "./github";
 import { ClientStore, TokenStore } from "./messaging/oauth";
@@ -202,7 +203,8 @@ export class Orchestrator {
                 trackerId: i.id,
                 issueUrl: i.url,
                 status: "queued",
-                branch: `handsfree/${i.key}`,
+                type: i.type,
+                branch: renderName(p.naming.branch.template, { key: i.key, summary: i.summary || i.key, type: i.type }),
                 worktree: worktreePath(p, i.key),
                 agentIndex: 0,
                 attempts: [],
@@ -420,6 +422,15 @@ export class Orchestrator {
     if (!p) return this.fail(t, "Its project was deleted.");
     this.touch(t, { status: "running", error: undefined });
 
+    // Until a PR exists the branch is ours to name: re-render it so fixing the naming rules + Retry takes effect.
+    if (!t.prUrl) {
+      const b = checkName(p.naming.branch, nameVars(t));
+      if (!b.ok) return this.fail(t, `Branch name ${b.error}. Fix the naming rules in Projects → ${p.name}, then Retry.`);
+      t.branch = b.value;
+    }
+    const title = checkName(p.naming.prTitle, nameVars(t));
+    if (!title.ok) return this.fail(t, `PR title ${title.error}. Fix the naming rules in Projects → ${p.name}, then Retry.`);
+
     try {
       this.log(t.key, `\nworktree  ${t.worktree}\nbranch    ${t.branch}\n`);
       this.log(t.key, `${await ensureWorktree(p, t)}\n`);
@@ -438,7 +449,7 @@ export class Orchestrator {
     let leaseSha: string | null | undefined;
     if (t.prUrl) {
       try {
-        if (await hasUncommitted(t.worktree)) await commitAll(t.worktree, `${t.key}: ${t.summary}`);
+        if (await hasUncommitted(t.worktree)) await commitAll(t.worktree, this.commitMessage(t));
         const s = await syncWithRemote(p, t);
         leaseSha = s.remoteSha;
         this.log(t.key, s.remoteSha ? `↓ synced with ${p.remote}/${t.branch}${s.fastForwarded ? " (fast-forwarded to new commits)" : ""}\n` : `· ${p.remote}/${t.branch} no longer exists on the remote\n`);
@@ -492,12 +503,15 @@ export class Orchestrator {
     // ---- push, PR, tracker comment ----
     try {
       this.touch(t, { currentAgent: undefined, slow: undefined });
+      // Only commits that aren't on the remote yet can be reworded; pushed history stays as it is.
+      const reworded = await rewordCommits(t.worktree, `${leaseSha || t.baseRef}..HEAD`, (s) => conformSubject(p.naming.commit, nameVars(t), s));
+      if (reworded) this.log(t.key, `✎ Reworded ${reworded} commit subject${reworded === 1 ? "" : "s"} to match the commit pattern\n`);
       this.log(t.key, `\n⇡ Pushing ${t.branch}\n`);
       await push(p, t, leaseSha);
       const lastOk = [...t.attempts].reverse().find((a) => a.outcome === "success");
       const body = prBody(t, lastOk?.agentName || winner?.name || "agent", this.readLog(t.key, 20_000));
       // A ticket that already has a PR (CI fix, hand-back after cleanup) pushes to it; never open a second one.
-      const url = t.prUrl || (await openPr(p, t, body));
+      const url = t.prUrl || (await openPr(p, t, title.value, body));
       const sha = await headSha(t.worktree);
       if (t.fix) {
         const pr: PrInfo = { ...t.pr!, headSha: sha, ci: "pending", failedChecks: [], fixRounds: t.fix.round };
@@ -644,7 +658,7 @@ export class Orchestrator {
     try {
       if (await hasUncommitted(t.worktree)) {
         this.log(t.key, "\n• Committing changes the agent left uncommitted\n");
-        await commitAll(t.worktree, `${t.key}: ${t.summary}`);
+        await commitAll(t.worktree, this.commitMessage(t));
       }
       // A fix branch is always ahead of base (the feature commits), so "no changes" is measured from where this run started.
       const ahead = await commitsAhead(t.worktree, t.fix && startSha ? startSha : t.baseRef!);
@@ -662,6 +676,12 @@ export class Orchestrator {
   }
 
   // ---------- actions ----------
+  /** HandsFree's own commits (leftovers after an agent, your hand-back) follow the project's commit template. */
+  private commitMessage(t: Ticket) {
+    const p = this.project(t.projectId);
+    return renderName((p?.naming || DEFAULT_NAMING).commit.template, nameVars(t));
+  }
+
   /** Send a message to the agent working on this ticket, without stopping it (agents with stream-json input only). */
   feedback(key: string, text: string) {
     const t = this.state.tickets[key];
@@ -855,7 +875,7 @@ export class Orchestrator {
     if (this.running.has(key)) throw new Error("It's already running.");
     if (!fs.existsSync(t.worktree)) throw new Error("The worktree was removed.");
     if (mode === "pr") {
-      if (await hasUncommitted(t.worktree)) await commitAll(t.worktree, `${t.key}: ${t.summary}`);
+      if (await hasUncommitted(t.worktree)) await commitAll(t.worktree, this.commitMessage(t));
       const ahead = await commitsAhead(t.worktree, t.baseRef || `${this.project(t.projectId)?.remote || "origin"}/${this.project(t.projectId)?.baseBranch || "main"}`);
       if (ahead === 0) throw new Error("There are no changes on this branch yet, so there's nothing to open a PR with.");
       t.attempts.push({ agentName: "You", startedAt: now(), endedAt: now(), outcome: "success", note: "Handed back with your changes" });
@@ -887,6 +907,12 @@ export class Orchestrator {
 }
 
 /** Index of the last attempt that ran an agent (skips "You" hand-backs). */
+/** What the naming templates get to work with for a ticket. */
+function nameVars(t: Ticket): NameVars {
+  return { key: t.key, summary: t.summary, type: t.type };
+}
+
+
 /** One Claude Code stream-json input line: a user message, newline-terminated. */
 function userMessageLine(text: string) {
   return `${JSON.stringify({ type: "user", message: { role: "user", content: text } })}\n`;
@@ -922,7 +948,7 @@ export function buildPrompt(p: ProjectConfig, t: Ticket, continuing: boolean, no
     "## How to work",
     `- You are in a git worktree on branch \`${t.branch}\`, based on \`${t.baseRef || p.baseBranch}\`. Only change files here.`,
     "- Implement the ticket completely. Add or update tests. Run the project's tests and linters and fix what fails.",
-    `- Commit your work with clear messages starting with "${t.key}:". Do NOT push and do NOT open a pull request — HandsFree does that after you finish.`,
+    `- ${commitRule(p.naming.commit, nameVars(t), `Commit your work with clear messages starting with "${t.key}:".`)} Do NOT push and do NOT open a pull request — HandsFree does that after you finish.`,
     "- Nobody is watching. Don't ask questions or wait for input; make reasonable assumptions and list them at the end.",
     "- Ignore the `.handsfree/` folder.",
     "- Finish with a short summary: what you changed, how you tested it, and any assumptions or follow-ups.",

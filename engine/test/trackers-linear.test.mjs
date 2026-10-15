@@ -8,7 +8,7 @@ import { ClientStore, TokenStore } from "../dist/test/messaging/oauth.js";
 import { LinearTracker } from "../dist/test/trackers/linear.js";
 
 const future = new Date(Date.now() + 3600_000).toISOString();
-const issues = [{ id: "uuid-1", identifier: "ENG-7", title: "Add greeting", description: "Say hi", url: "https://linear.app/x/ENG-7" }];
+const issues = [{ id: "uuid-1", identifier: "ENG-7", title: "Add greeting", description: "Say hi", url: "https://linear.app/x/ENG-7", labels: [{ name: "Bug" }] }];
 const toolsA = {
   list_issues: { inputSchema: { properties: { assignee: {}, query: {}, limit: {} } }, handler: (a) => ({ calls: a, content: [{ type: "text", text: JSON.stringify({ issues }) }] }) },
   create_comment: { inputSchema: { properties: { issueId: {}, body: {} } }, handler: (a) => ({ content: [{ type: "text", text: JSON.stringify({ ok: true, got: a }) }] }) },
@@ -31,7 +31,7 @@ test("LinearTracker: schema-driven args, keys from identifier, comment and trans
   try {
     const l = mk(mcp);
     const found = await l.search();
-    assert.deepEqual(found, [{ key: "ENG-7", summary: "Add greeting", description: "Say hi", id: "uuid-1", url: "https://linear.app/x/ENG-7" }]);
+    assert.deepEqual(found, [{ key: "ENG-7", summary: "Add greeting", description: "Say hi", id: "uuid-1", url: "https://linear.app/x/ENG-7", type: "bug" }]);
     const list = mcp.calls.find((c) => c.params?.name === "list_issues").params.arguments;
     assert.deepEqual(list, { assignee: "me", query: "greeting", limit: 50 });
     assert.deepEqual(await l.comment({ key: "ENG-7", trackerId: "uuid-1" }, "PR opened"), { skipped: false });
