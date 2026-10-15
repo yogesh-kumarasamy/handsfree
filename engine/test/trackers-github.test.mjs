@@ -16,6 +16,13 @@ test("parseGithubIssues: JSON and text fallback, key = repo#number", () => {
   assert.deepEqual(parseGithubIssues("#7  Crash on save\n#8\tSlow list", "repo").map((i) => [i.key, i.summary]), [["repo#7", "Crash on save"], ["repo#8", "Slow list"]]);
 });
 
+test("GithubTracker.repo: a pasted URL, trailing slash or .git all resolve to owner/name", async () => {
+  const mk = (repo) => new GithubTracker({ repoPath: "", remote: "origin", tracker: { kind: "github", repo, query: "is:open", searchCommand: "", commentCommand: "", transitionCommand: "", doneStatus: "", linearAssignee: "", linearState: "" } }, async () => ({ code: 0, stdout: "", stderr: "", timedOut: false }));
+  for (const v of ["acme/repo", "https://github.com/acme/repo", "https://github.com/acme/repo/", "https://github.com/acme/repo.git", "github.com/acme/repo", " acme/repo "]) {
+    assert.equal(await mk(v).repo(), "acme/repo", v);
+  }
+});
+
 test("parseGithubIssues: labels give the branch type (bug label → bug, otherwise feature; no labels → unset)", () => {
   const j = parseGithubIssues(
     JSON.stringify([

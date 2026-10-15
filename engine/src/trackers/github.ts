@@ -59,7 +59,9 @@ export class GithubTracker implements TrackerAdapter {
   async repo(): Promise<string> {
     if (this.resolved) return this.resolved;
     const set = this.p.tracker.repo.trim();
-    if (set) return (this.resolved = set);
+    // People paste the browser URL; gh accepts it, but ticket keys are built from the last path segment,
+    // so normalise to owner/name (drops a trailing slash or .git) whenever it looks like a github.com address.
+    if (set) return (this.resolved = parseRepoFromRemote(set) || set.replace(/\.git$/, "").replace(/\/+$/, ""));
     let remoteUrl = "";
     if (this.p.repoPath) {
       const r = await this.run(fill("git -C {path} remote get-url {remote}", { path: this.p.repoPath, remote: this.p.remote || "origin" }), { timeoutMs: 15_000 });

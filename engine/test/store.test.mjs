@@ -102,6 +102,15 @@ test("normalizeProject: naming defaults to HandsFree's old names with no pattern
   assert.equal(r.naming.branch.template, "handsfree/{key}", "a blank template falls back to the default");
 });
 
+test("normalizeProject: the old default Jira search command gains issuetype so {type} can be derived", () => {
+  const old = 'acli jira workitem search --jql {jql} --fields "key,summary,description" --limit 50 --json';
+  const tracker = { kind: "jira", query: "project = X", searchCommand: old, commentCommand: "", transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "" };
+  const p = normalizeProject({ id: "p1", tracker });
+  assert.equal(p.tracker.searchCommand, 'acli jira workitem search --jql {jql} --fields "key,summary,description,issuetype" --limit 50 --json');
+  const custom = normalizeProject({ id: "p1", tracker: { ...tracker, searchCommand: "mytool search {jql}" } });
+  assert.equal(custom.tracker.searchCommand, "mytool search {jql}");
+});
+
 test("normalizeProject: a customised Claude command is left alone", () => {
   const custom = "claude -p {prompt} --model opus --output-format stream-json --verbose";
   const p = normalizeProject({ id: "p1", agents: [{ id: "a", name: "Claude Code", command: custom }] });

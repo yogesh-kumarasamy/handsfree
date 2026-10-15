@@ -5,7 +5,9 @@ import { DEFAULT_NAMING, type NamingConfig, type NamingRule } from "./naming";
 import {
   CLAUDE_COMMAND,
   CLAUDE_RESUME,
+  DEFAULT_JIRA_SEARCH,
   LEGACY_CLAUDE_COMMAND,
+  LEGACY_JIRA_SEARCH,
   DEFAULT_AGENT_MESSAGE_COMMAND,
   DEFAULT_DONE_STATUS,
   DEFAULT_LINEAR_ACCOUNT,
@@ -104,7 +106,8 @@ export function normalizeTracker(p: Partial<ProjectConfig> & LegacyJiraFields): 
   return {
     kind,
     query: t.query || "",
-    searchCommand: t.searchCommand ?? "",
+    // The stock Jira search gained issuetype (naming templates need {type}); customised commands are yours.
+    searchCommand: (t.searchCommand ?? "").trim() === LEGACY_JIRA_SEARCH ? DEFAULT_JIRA_SEARCH : t.searchCommand ?? "",
     commentCommand: t.commentCommand ?? "",
     transitionCommand: t.transitionCommand ?? "",
     doneStatus: t.doneStatus ?? DEFAULT_DONE_STATUS[kind],
