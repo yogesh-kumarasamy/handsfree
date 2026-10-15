@@ -143,7 +143,7 @@ function demoState(scenario: DemoOptions["scenario"]): EngineState {
       status: "failed",
       error: "All agents failed",
       attempts: [
-        { agentName: "Claude Code", startedAt: ago(320), endedAt: ago(300), exitCode: 0, outcome: "no_changes", note: "Exited without changes" },
+        { agentName: "Claude Code", startedAt: ago(320), endedAt: ago(300), exitCode: 0, outcome: "no_changes", note: "Exited without changes", sessionId: "3f9c2a71-5d0e-4b8a-9e61-2c7d4f0a8b13" },
         { agentName: "Grok", startedAt: ago(300), endedAt: ago(270), exitCode: 2, outcome: "failed" },
       ],
       createdAt: ago(321),
@@ -224,6 +224,7 @@ export function createMockApi(opts: DemoOptions): Api {
       emit({ type: "state", state });
     },
     getLog: async () => DEMO_LOG,
+    openTerminal: async () => ({ command: "claude --resume 3f9c2a71-5d0e-4b8a-9e61-2c7d4f0a8b13 --mcp-config .handsfree/mcp.json" }),
     testJira: async () => ({
       issues: [
         { key: "CSW-1425", summary: "Persist agent's last-used canned response" },

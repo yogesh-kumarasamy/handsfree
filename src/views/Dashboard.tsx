@@ -150,10 +150,25 @@ function Chain({ ticket, project }: { ticket: Ticket; project?: ProjectConfig })
 
 function TicketDetail({ api, ticket, project, onClose }: { api: Api; ticket: Ticket; project?: ProjectConfig; onClose: () => void }) {
   const [log, setLog] = useState("");
+  const [term, setTerm] = useState<{ ok: boolean; text: string }>();
   const logRef = useRef<HTMLPreElement>(null);
+
+  const openTerminal = async (attempt?: number) => {
+    try {
+      const r = await api.openTerminal(ticket.key, attempt);
+      setTerm({ ok: true, text: `Opened Terminal · ${r.command}` });
+    } catch (e) {
+      setTerm({ ok: false, text: String((e as Error).message || e) });
+    }
+  };
+  const canResume = (i: number) => {
+    const a = ticket.attempts[i];
+    return !!a?.endedAt && (!!a.sessionId || /claude/i.test(a.agentName));
+  };
 
   useEffect(() => {
     let alive = true;
+    setTerm(undefined);
     api.getLog(ticket.key).then((l) => alive && setLog(l));
     const unsub = api.subscribe((e) => {
       if (e.type === "log" && e.key === ticket.key) setLog((l) => (l + e.chunk).slice(-200_000));
@@ -198,6 +213,15 @@ function TicketDetail({ api, ticket, project, onClose }: { api: Api; ticket: Tic
           {ticket.prUrl && (
             <button className="btn sm primary" onClick={() => openExternal(ticket.prUrl!)}>Open draft PR ↗</button>
           )}
+          {ticket.status !== "done" && (
+            <button
+              className="btn sm"
+              onClick={() => openTerminal()}
+              title={ticket.status === "running" ? "Plain shell in the worktree (the agent is still running)" : "Resume the last agent session in Terminal"}
+            >
+              ⌨ Open in Terminal
+            </button>
+          )}
           {ticket.status === "running" && <button className="btn sm danger" onClick={() => api.stop(ticket.key)}>Stop</button>}
           {(ticket.status === "failed" || ticket.status === "stopped") && (
             <button className="btn sm primary" onClick={() => api.retry(ticket.key)}>Retry chain</button>
@@ -219,6 +243,11 @@ function TicketDetail({ api, ticket, project, onClose }: { api: Api; ticket: Tic
         </dl>
 
         {ticket.error && <div className="callout err"><span className="t">{ticket.error}</span></div>}
+        {term && (
+          <div className={`callout ${term.ok ? "ok" : "err"}`}>
+            <span className="t mono" style={{ overflowWrap: "anywhere" }}>{term.text}</span>
+          </div>
+        )}
 
         <div>
           <div className="section-label">Attempts</div>
@@ -237,7 +266,14 @@ function TicketDetail({ api, ticket, project, onClose }: { api: Api; ticket: Tic
                       {a.note ? ` · ${a.note}` : ""}
                     </div>
                   </div>
-                  <span className="small faint">{duration(a.startedAt, a.endedAt)}</span>
+                  <div className="row" style={{ gap: 6 }}>
+                    {canResume(i) && ticket.status !== "done" && (
+                      <button className="btn ghost sm" onClick={() => openTerminal(i)} title={a.sessionId ? `claude --resume ${a.sessionId}` : "claude --continue in the worktree"}>
+                        Resume ↗
+                      </button>
+                    )}
+                    <span className="small faint">{duration(a.startedAt, a.endedAt)}</span>
+                  </div>
                 </div>
               );
             })}

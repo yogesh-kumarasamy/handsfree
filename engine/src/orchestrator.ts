@@ -4,7 +4,7 @@ import { changedFiles, commitAll, commitsAhead, ensureWorktree, hasUncommitted, 
 import { createStreamFormatter } from "./streamfmt";
 import { openPr, prState } from "./github";
 import { commentOnIssue, searchIssues } from "./jira";
-import { fill, SHELL, start, type Running } from "./shell";
+import { exec, fill, q, SHELL, start, type Running } from "./shell";
 import { loadConfig, loadState, logFile, normalizeProject, saveConfig, saveState } from "./store";
 import type { AgentConfig, Attempt, Config, EngineEvent, EngineState, ProjectConfig, Ticket } from "./types";
 
@@ -275,7 +275,10 @@ export class Orchestrator {
     let tail = "";
     let lastOutput = Date.now();
     const startedAt = Date.now();
-    const fmt = createStreamFormatter();
+    const fmt = createStreamFormatter((id) => {
+      attempt.sessionId = id;
+      this.touch(t);
+    });
     const emit = (text: string) => {
       if (!text) return;
       lastOutput = Date.now();
@@ -372,6 +375,67 @@ export class Orchestrator {
     this.log(key, "\n🧹 Worktree removed\n");
     this.touch(t, { status: "done" });
   }
+  /**
+   * Open Terminal in the ticket's worktree. For Claude attempts, resume that exact session
+   * (`claude --resume <id>`), so you can ask it what went wrong and keep going yourself.
+   */
+  async openTerminal(key: string, attemptIndex?: number) {
+    const t = this.state.tickets[key];
+    if (!t) throw new Error("Unknown ticket");
+    if (!fs.existsSync(t.worktree)) throw new Error("The worktree was already removed.");
+    const p = this.project(t.projectId);
+    const idx = attemptIndex ?? t.attempts.length - 1;
+    const a = t.attempts[idx];
+    // Resuming a session the agent is still writing to would fork it; give a plain shell instead.
+    const stillRunning = !!a && !a.endedAt && this.running.has(key);
+
+    const agentCmd = p?.agents.find((x) => x.name === a?.agentName)?.command.trim() || "";
+    const isClaude = /^claude\b/.test(agentCmd) || /claude/i.test(a?.agentName || "");
+    const mcp = fs.existsSync(path.join(t.worktree, ".handsfree", "mcp.json")) ? " --mcp-config .handsfree/mcp.json" : "";
+    const resume = stillRunning
+      ? ""
+      : a?.sessionId
+        ? `claude --resume ${q(a.sessionId)}${mcp}`
+        : isClaude
+          ? `claude --continue${mcp}`
+          : "";
+    const label = a ? `attempt ${idx + 1} · ${a.agentName}${a.outcome ? ` · ${a.outcome}` : ""}` : "no attempts yet";
+
+    const script = [
+      "#!/bin/zsh",
+      `export PATH=${q(process.env.PATH || "")}`,
+      `cd ${q(t.worktree)} || exit 1`,
+      "clear",
+      `echo ${q(`HandsFree ▸ ${t.key}: ${t.summary}`)}`,
+      `echo ${q(`${label}   ·   branch ${t.branch}`)}`,
+      `echo ${q(`worktree ${t.worktree}`)}`,
+      "echo",
+      `echo '── last lines of the HandsFree log ──'`,
+      `tail -n 25 ${q(logFile(key))}`,
+      "echo",
+      `echo '── git status ──'`,
+      "git status --short",
+      "echo",
+      ...(resume
+        ? [`echo ${q(`$ ${resume}`)}`, resume]
+        : [`echo ${q(stillRunning ? "The agent is still running here, so this is a plain shell (no resume). Watch: tail -f the log above." : "This agent has no resumable session. You are in the worktree.")}`]),
+      // Keep the window usable after Claude exits.
+      'exec "${SHELL:-/bin/zsh}" -l',
+    ].join("\n");
+
+    const dir = path.join(path.dirname(logFile(key)), "..", "terminal");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${key.replace(/[^A-Za-z0-9_-]/g, "_")}.command`);
+    fs.writeFileSync(file, `${script}\n`, { mode: 0o755 });
+    fs.chmodSync(file, 0o755);
+
+    const opener = process.env.HF_OPEN_CMD || "open";
+    const r = await exec(opener, [file], { timeoutMs: 15_000 });
+    if (r.code !== 0) throw new Error(`Couldn't open Terminal: ${(r.stderr || r.stdout).trim()}`);
+    this.log(key, `\n⌨ Opened Terminal${resume ? ` · ${resume}` : ""}\n`);
+    return { command: resume || `cd ${q(t.worktree)}`, file };
+  }
+
   forget(key: string) {
     if (this.running.has(key)) return;
     delete this.state.tickets[key];

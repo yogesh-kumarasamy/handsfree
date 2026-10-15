@@ -43,11 +43,13 @@ case "$1 $2" in
   "pr view") cat "${root}/prstate" 2>/dev/null || echo OPEN ;;
   "auth status") echo "Logged in to github.com as tester"; exit 0 ;;
 esac`);
+// stand-in for macOS `open`: keep a copy of the Terminal launcher so the test can read it
+script("fakeopen", `cp "$1" "${root}/opened.command"`);
 // agent 1: edits a file, then dies on a rate limit
 script("fakegrok", `echo "working on $HANDSFREE_ISSUE"; echo "partial" > partial.txt; echo "Error: 429 rate limit exceeded" >&2; exit 1`);
 // agent 2: sees the previous work, commits
 script("fakeclaude", `test -f "$2" || exit 9; grep -q "Previous attempts" "$2" && echo "saw previous attempt"; test -f "$4" || exit 8; echo "hi" >> README.md; git add -A; git commit -qm "$HANDSFREE_ISSUE: greeting"
-echo '{"type":"system","subtype":"init","model":"claude-test","mcp_servers":[{"name":"github","status":"connected"}]}'
+echo '{"type":"system","subtype":"init","session_id":"sess-1234-abcd","model":"claude-test","mcp_servers":[{"name":"github","status":"connected"}]}'
 echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"pnpm test"}}]}}'
 echo '{"type":"result","subtype":"success","is_error":false,"num_turns":3,"total_cost_usd":0.12,"result":"Summary: added greeting"}'`);
 
@@ -74,7 +76,7 @@ fs.writeFileSync(path.join(data, "config.json"), JSON.stringify({ version: 1, se
 const port = 48000 + Math.floor(Math.random() * 1000);
 const token = "test-token";
 const engine = spawn(process.execPath, [path.resolve("engine/dist/handsfree-engine.mjs")], {
-  env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, HF_DATA: data, HF_PORT: String(port), HF_TOKEN: token, HF_SKIP_LOGIN_PATH: "1" },
+  env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, HF_DATA: data, HF_PORT: String(port), HF_TOKEN: token, HF_SKIP_LOGIN_PATH: "1", HF_OPEN_CMD: "fakeopen" },
   stdio: ["pipe", "inherit", "inherit"],
 });
 const base = `http://127.0.0.1:${port}`;
@@ -129,6 +131,18 @@ try {
   assert.match(log, /■ done · success · 3 turns · \$0\.12\n\nSummary: added greeting/, "stream-json result formatted");
   assert.doesNotMatch(log, /"type":"assistant"/, "raw JSON hidden");
   assert.match(fs.readFileSync(path.join(root, "prs.log"), "utf8"), /--draft/);
+
+  // Claude's session id is recorded, and "Open in Terminal" resumes exactly that session
+  assert.equal(t1.attempts[1].sessionId, "sess-1234-abcd");
+  const term = await api("/api/tickets/DEMO-1/terminal", "POST", {});
+  assert.equal(term.command, "claude --resume 'sess-1234-abcd' --mcp-config .handsfree/mcp.json");
+  const launcher = fs.readFileSync(path.join(root, "opened.command"), "utf8");
+  assert.match(launcher, new RegExp(`cd '${wt}'`));
+  assert.match(launcher, /\nclaude --resume 'sess-1234-abcd' --mcp-config \.handsfree\/mcp\.json\n/);
+  assert.match(launcher, /git status --short/);
+  // Grok has no session → plain shell in the worktree
+  const term0 = await api("/api/tickets/DEMO-1/terminal", "POST", { attempt: 0 });
+  assert.match(term0.command, /^cd '/);
 
   // maxParallel=1 → DEMO-2 runs after DEMO-1
   await waitFor(async () => (await api("/api/state")).tickets["DEMO-2"]?.status === "pr_open", "DEMO-2 pr_open");

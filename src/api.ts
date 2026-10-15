@@ -27,6 +27,8 @@ export interface Api {
   cleanup(key: string): Promise<void>;
   forget(key: string): Promise<void>;
   getLog(key: string): Promise<string>;
+  /** Open Terminal in the worktree; resumes the attempt's Claude session when there is one. */
+  openTerminal(key: string, attempt?: number): Promise<{ command: string }>;
   testJira(project: ProjectConfig): Promise<{ issues: FoundIssue[]; error?: string; raw?: string }>;
   repoInfo(path: string): Promise<RepoInfo>;
   doctor(): Promise<DoctorItem[]>;
@@ -74,6 +76,17 @@ function createHttpApi(base: string, token: string): Api {
     cleanup: (k) => call(`/api/tickets/${encodeURIComponent(k)}/cleanup`, "POST"),
     forget: (k) => call(`/api/tickets/${encodeURIComponent(k)}/forget`, "POST"),
     getLog: async (k) => (await call<{ log: string }>(`/api/tickets/${encodeURIComponent(k)}/log`)).log,
+    openTerminal: (k, attempt) =>
+      call<{ command: string }>(`/api/tickets/${encodeURIComponent(k)}/terminal`, "POST", { attempt }).catch((e) => {
+        // The engine answers errors as {"error": "..."}; surface just the message.
+        let msg = String((e as Error).message || e);
+        try {
+          msg = JSON.parse(msg).error || msg;
+        } catch {
+          /* plain text */
+        }
+        throw new Error(msg);
+      }),
     testJira: (project) => call("/api/test-jira", "POST", { project }),
     repoInfo: (path) => call("/api/repo-info", "POST", { path }),
     doctor: () => call("/api/doctor"),

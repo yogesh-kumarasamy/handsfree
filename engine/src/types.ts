@@ -57,6 +57,8 @@ export interface Attempt {
   exitCode?: number | null;
   outcome?: AttemptOutcome;
   note?: string;
+  /** Claude Code session id (from stream-json), so you can `claude --resume` it later. */
+  sessionId?: string;
 }
 
 export interface Ticket {

@@ -59,12 +59,32 @@ export function formatStreamLine(line: string): string | null {
   }
 }
 
+/** Pull a Claude session id out of a stream-json line, if it has one. */
+export function sessionIdOf(line: string): string | undefined {
+  const t = line.trim();
+  if (!t.startsWith("{") || !t.includes("session_id")) return;
+  try {
+    const id = JSON.parse(t).session_id;
+    return typeof id === "string" && /^[A-Za-z0-9-]{8,}$/.test(id) ? id : undefined;
+  } catch {
+    return;
+  }
+}
+
 /** Line-buffered transformer: feed raw chunks, get formatted text back. */
-export function createStreamFormatter() {
+export function createStreamFormatter(onSession?: (id: string) => void) {
   let buf = "";
+  let seen: string | undefined;
   const fmt = (lines: string[]) =>
     lines
-      .map(formatStreamLine)
+      .map((l) => {
+        const id = onSession && sessionIdOf(l);
+        if (id && id !== seen) {
+          seen = id;
+          onSession!(id);
+        }
+        return formatStreamLine(l);
+      })
       .filter((l): l is string => l !== null)
       .map((l) => `${l}\n`)
       .join("");

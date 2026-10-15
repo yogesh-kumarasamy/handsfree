@@ -57,10 +57,18 @@ export function startServer(o: Orchestrator, port: number, token: string) {
     };
 
     try {
-      const m = url.pathname.match(/^\/api\/tickets\/([^/]+)\/(retry|stop|cleanup|forget|log)$/);
+      const m = url.pathname.match(/^\/api\/tickets\/([^/]+)\/(retry|stop|cleanup|forget|log|terminal)$/);
       if (m) {
         const key = decodeURIComponent(m[1]);
         if (m[2] === "log") return send(200, { log: o.readLog(key) });
+        if (m[2] === "terminal") {
+          const { attempt } = await body<{ attempt?: number }>();
+          try {
+            return send(200, await o.openTerminal(key, attempt));
+          } catch (e) {
+            return send(400, { error: (e as Error).message });
+          }
+        }
         if (m[2] === "retry") o.retry(key);
         if (m[2] === "stop") o.stop(key);
         if (m[2] === "cleanup") await o.cleanup(key);
