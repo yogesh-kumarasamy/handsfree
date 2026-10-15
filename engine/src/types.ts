@@ -42,6 +42,7 @@ export interface ProjectConfig {
   ciFixMaxRounds: number;
   /** Minutes an approved PR may wait before HandsFree raises a merge nudge (5..1440). */
   mergeNudgeAfterMin: number;
+  messaging: MessagingConfig;
 }
 
 export interface Settings {
@@ -55,6 +56,7 @@ export interface Settings {
   paused: boolean;
   notifications: boolean;
   launchAtLogin: boolean;
+  accounts: { setmore: SetmoreAccountSettings };
 }
 
 export interface Config {
@@ -128,6 +130,80 @@ export interface FixContext {
   requestedAt: string;
 }
 
+export type MessagingPlatform = "none" | "setmore" | "agent";
+
+export interface MessageTemplates {
+  reviewReady: string;
+  mergeNudge: string;
+  manual: string;
+  bulk: string;
+}
+
+export interface MessagingConfig {
+  platform: MessagingPlatform;
+  /** Channel id on the platform (Setmore channelId). */
+  channelId: string;
+  /** Display name, cached from the channel picker. */
+  channelName: string;
+  templates: MessageTemplates;
+  /** platform "agent" only: command template; {prompt} is filled (shell-quoted). */
+  agentCommand: string;
+}
+
+export interface SetmoreAccountSettings {
+  clientId: string;
+  /** Loopback port for the OAuth redirect; must match the registered redirect URI. */
+  redirectPort: number;
+  mcpUrl: string;
+  issuer: string;
+  scopes: string;
+}
+
+export type MessageKind = "review_ready" | "merge_nudge" | "manual" | "bulk" | "test";
+
+export interface MessageRecord {
+  kind: MessageKind;
+  at: string;
+  platform: MessagingPlatform;
+  channelId: string;
+  channelName: string;
+  text: string;
+  ok: boolean;
+  /** Platform message id when known. */
+  id?: string;
+  error?: string;
+}
+
+export interface AccountStatus {
+  loggedIn: boolean;
+  /** Display name / email from the id token when present. */
+  user?: string;
+  scope?: string;
+  expiresAt?: string;
+  /** Last refresh/call auth error; cleared on login. */
+  error?: string;
+  /** True while a login is in progress (loopback server listening). */
+  loginPending?: boolean;
+}
+
+export const DEFAULT_TEMPLATES: MessageTemplates = {
+  reviewReady: "Hey team, please review the PR for {key} — {summary}: {pr_url}",
+  mergeNudge: "Hi team, this PR is approved and has been waiting {approved_ago} to be merged: {pr_url}",
+  manual: "{key} — {summary}: {pr_url}",
+  bulk: "Hi team, these PRs need eyes:\n{list}",
+};
+
+export const DEFAULT_AGENT_MESSAGE_COMMAND =
+  "claude -p {prompt} --output-format json --max-turns 4 --allowedTools mcp__claude_ai_Setmore__send_message,mcp__claude_ai_Setmore__list_channels";
+
+export const DEFAULT_SETMORE_ACCOUNT: SetmoreAccountSettings = {
+  clientId: "",
+  redirectPort: 47831,
+  mcpUrl: "https://mcp.setmore.com/mcp",
+  issuer: "https://auth.setmore.com/o",
+  scopes: "openid offline_access awapis.chat.streams.push awapis.streams.read awapis.users.read",
+};
+
 export type PrEventKind = "review_ready" | "merge_nudge" | "merged" | "ci_fix_exhausted";
 
 export interface PrEvent {
@@ -169,6 +245,8 @@ export interface Ticket {
   pr?: PrInfo;
   /** Present while a CI fix is queued or running. */
   fix?: FixContext;
+  /** Collab messages sent for this ticket, oldest first. */
+  messages?: MessageRecord[];
   /** Set while the current agent has run longer than settings.slowAfterMin. */
   slow?: boolean;
   jiraCommented?: boolean;
@@ -186,6 +264,7 @@ export interface EngineState {
   nextPrCheckAt?: string;
   /** Per ticket key: the last `gh` error from the PR check. */
   prCheckErrors: Record<string, string>;
+  accounts: { setmore: AccountStatus };
 }
 
 export interface FoundIssue {
@@ -198,7 +277,8 @@ export type EngineEvent =
   | { type: "state"; state: EngineState }
   | { type: "config"; config: Config }
   | { type: "log"; key: string; chunk: string }
-  | { type: "notify"; title: string; body: string; kind: NotifyKind };
+  | { type: "notify"; title: string; body: string; kind: NotifyKind }
+  | { type: "account"; name: "setmore"; status: AccountStatus };
 
 export type NotifyKind = "pr" | "fallback" | "failed" | "slow" | "info";
 

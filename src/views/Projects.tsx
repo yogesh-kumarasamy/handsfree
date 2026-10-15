@@ -1,12 +1,17 @@
 import { useEffect, useState } from "react";
 import {
   AGENT_PRESETS,
+  DEFAULT_AGENT_MESSAGE_COMMAND,
+  DEFAULT_TEMPLATES,
   DEFAULT_EXHAUSTION_PATTERNS,
   DEFAULT_JIRA_COMMENT,
   DEFAULT_JIRA_SEARCH,
   type AgentConfig,
   type Config,
   type FoundIssue,
+  type MessageTemplates,
+  type MessagingConfig,
+  type MessagingPlatform,
   type ProjectConfig,
 } from "../../engine/src/types";
 import { pickFolder, type Api, type RepoInfo } from "../api";
@@ -32,6 +37,7 @@ function blankProject(): ProjectConfig {
     ciAutoFix: true,
     ciFixMaxRounds: 2,
     mergeNudgeAfterMin: 30,
+    messaging: { platform: "none", channelId: "", channelName: "", templates: { ...DEFAULT_TEMPLATES }, agentCommand: DEFAULT_AGENT_MESSAGE_COMMAND },
   };
 }
 
@@ -141,7 +147,7 @@ export function Projects({
   );
 }
 
-const STEPS = ["Repository", "Jira", "MCP servers", "Agent chain", "Review"];
+const STEPS = ["Repository", "Jira", "MCP servers", "Agent chain", "Messaging", "Review"];
 
 function ProjectEditor({
   api,
@@ -165,6 +171,9 @@ function ProjectEditor({
   const [repo, setRepo] = useState<RepoInfo>();
   const [jira, setJira] = useState<{ issues?: FoundIssue[]; error?: string; raw?: string; loading?: boolean }>();
   const [saving, setSaving] = useState(false);
+  const [channels, setChannels] = useState<{ list?: { id: string; name: string }[]; error?: string; loading?: boolean }>();
+  const [channelQuery, setChannelQuery] = useState("");
+  const [testMsg, setTestMsg] = useState<{ ok: boolean; text: string }>();
   const set = (patch: Partial<ProjectConfig>) => setP((x) => ({ ...x, ...patch }));
 
   // Demo screenshots: pre-fill.
@@ -228,9 +237,22 @@ function ProjectEditor({
     !p.jql.trim() && "Add a JQL",
     mcpError && "MCP JSON is invalid",
     enabledAgents.length === 0 && "Enable at least one agent with a command",
+    p.messaging.platform !== "none" && !p.messaging.channelId && "Pick a collab channel (Messaging step)",
   ].filter(Boolean) as string[];
 
   const setAgent = (id: string, patch: Partial<AgentConfig>) => set({ agents: p.agents.map((a) => (a.id === id ? { ...a, ...patch } : a)) });
+  const setMsg = (patch: Partial<MessagingConfig>) => set({ messaging: { ...p.messaging, ...patch } });
+  const setTpl = (k: keyof MessageTemplates, v: string) => setMsg({ templates: { ...p.messaging.templates, [k]: v } });
+  const loadChannels = async () => {
+    setChannels({ loading: true });
+    const r = await api.listChannels(p, channelQuery).catch((e) => ({ channels: [], error: String((e as Error).message || e) }));
+    setChannels({ list: r.channels, error: r.error });
+  };
+  const sendTest = async () => {
+    setTestMsg(undefined);
+    const r = await api.testMessage(p);
+    setTestMsg({ ok: r.ok, text: r.ok ? `Sent to ${p.messaging.channelName || p.messaging.channelId}` : r.error || "Failed" });
+  };
   const move = (i: number, d: -1 | 1) => {
     const a = [...p.agents];
     const j = i + d;
@@ -244,7 +266,7 @@ function ProjectEditor({
       <div className="page-head">
         <div>
           <h1 className="page-title">{isNew ? "New project" : p.name}</h1>
-          <div className="page-sub">{isNew ? "Five quick steps. It starts picking up tickets as soon as you save." : "Changes apply from the next ticket."}</div>
+          <div className="page-sub">{isNew ? "Six quick steps. It starts picking up tickets as soon as you save." : "Changes apply from the next ticket."}</div>
         </div>
         <div className="row">
           {onDelete && <button className="btn ghost danger" onClick={onDelete}>Delete</button>}
@@ -451,6 +473,72 @@ function ProjectEditor({
 
         {step === 4 && (
           <>
+            <h3 className="card-title">Messaging</h3>
+            <p className="card-sub">Where HandsFree tells the team about this project's PRs: when CI passes on a published PR, when an approved PR waits too long, and whenever you press Send.</p>
+            <div className="field">
+              <label>Platform</label>
+              <select className="select" style={{ maxWidth: 360 }} value={p.messaging.platform} onChange={(e) => setMsg({ platform: e.target.value as MessagingPlatform })}>
+                <option value="none">None — don't message</option>
+                <option value="setmore">Setmore collab (direct, signed in via Settings → Accounts)</option>
+                <option value="agent">Agent (any platform your MCP connectors reach)</option>
+              </select>
+            </div>
+            {p.messaging.platform !== "none" && (
+              <>
+                {p.messaging.platform === "agent" && (
+                  <div className="field">
+                    <label>Agent command</label>
+                    <input className="input code" value={p.messaging.agentCommand} onChange={(e) => setMsg({ agentCommand: e.target.value })} />
+                    <span className="hint"><span className="mono">{"{prompt}"}</span> is filled in. The agent must have the platform's send_message tool; the default uses Claude with the Setmore connector.</span>
+                  </div>
+                )}
+                <div className="field">
+                  <label>Channel</label>
+                  <div className="row">
+                    <input className="input" style={{ maxWidth: 240 }} placeholder="filter by name" value={channelQuery} onChange={(e) => setChannelQuery(e.target.value)} />
+                    <button className="btn" onClick={loadChannels} disabled={channels?.loading}>{channels?.loading ? "Loading…" : "Load channels"}</button>
+                    <span className="small muted">{p.messaging.channelName ? `Selected: ${p.messaging.channelName}` : p.messaging.channelId ? `Selected id: ${p.messaging.channelId}` : "None selected"}</span>
+                  </div>
+                  {channels?.error && <div className="callout err"><span className="t">{channels.error}</span></div>}
+                  {channels?.list && (
+                    <div className="issue-list" style={{ marginTop: 8 }}>
+                      {channels.list.length === 0 && <div className="issue-row small muted">No channels found.</div>}
+                      {channels.list.map((c) => (
+                        <div key={c.id} className="issue-row" style={{ cursor: "pointer" }} onClick={() => setMsg({ channelId: c.id, channelName: c.name })}>
+                          <span className="key">{c.id === p.messaging.channelId ? "✓" : ""}</span><span>{c.name}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <input className="input code" style={{ marginTop: 8 }} placeholder="or paste a channel id" value={p.messaging.channelId} onChange={(e) => setMsg({ channelId: e.target.value })} />
+                </div>
+                {(
+                  [
+                    ["reviewReady", "CI passed on a published PR"],
+                    ["mergeNudge", "Approved but not merged after the project's delay"],
+                    ["manual", "Send button (prefilled, editable)"],
+                    ["bulk", "Several selected PRs ({list} = one line per PR)"],
+                  ] as [keyof MessageTemplates, string][]
+                ).map(([k, label]) => (
+                  <div key={k} className="field">
+                    <label>{label}</label>
+                    <textarea className="textarea" rows={2} value={p.messaging.templates[k]} onChange={(e) => setTpl(k, e.target.value)} />
+                  </div>
+                ))}
+                <div className="callout info" style={{ marginBottom: 14 }}>
+                  <span className="t">Placeholders: <span className="mono">{"{key} {summary} {pr_url} {pr_number} {project} {branch} {approved_ago} {list}"}</span>. Leave a template empty to skip that message.</span>
+                </div>
+                <div className="row">
+                  <button className="btn" onClick={sendTest} disabled={!p.messaging.channelId}>Send test message</button>
+                  {testMsg && <span className={`small ${testMsg.ok ? "muted" : "err-text"}`}>{testMsg.text}</span>}
+                </div>
+              </>
+            )}
+          </>
+        )}
+
+        {step === 5 && (
+          <>
             <h3 className="card-title">Review</h3>
             <p className="card-sub">Once saved, HandsFree checks this JQL on the next poll and starts working.</p>
             <dl className="review-grid">
@@ -469,6 +557,8 @@ function ProjectEditor({
                 ))}
               </dd>
               <dt>Pull requests</dt><dd>{p.draftPr ? "Draft" : "Ready for review"}, PR link commented on the Jira ticket</dd>
+              <dt>Messaging</dt>
+              <dd>{p.messaging.platform === "none" ? "off" : `${p.messaging.platform === "setmore" ? "Setmore collab" : "agent"} → ${p.messaging.channelName || p.messaging.channelId || "no channel"}`}</dd>
               <dt>After the PR</dt>
               <dd>
                 {p.ciAutoFix ? `CI failures fixed automatically, up to ${p.ciFixMaxRounds} round${p.ciFixMaxRounds === 1 ? "" : "s"}` : "CI failures only shown"} · nudge after {p.mergeNudgeAfterMin} min approved · worktree removed on merge, merge commented on the ticket

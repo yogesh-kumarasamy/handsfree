@@ -32,6 +32,8 @@ export function Dashboard({
   const [showClosed, setShowClosed] = useState(false);
   const [showAllMerged, setShowAllMerged] = useState(false);
   const [notice, setNotice] = useState<string>();
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [compose, setCompose] = useState<{ keys: string[]; text: string; sending?: boolean; result?: string }>();
   const projects = useMemo(() => Object.fromEntries(config.projects.map((p) => [p.id, p])), [config]);
 
   const sorted = useMemo(
@@ -63,6 +65,58 @@ export function Dashboard({
   // Row buttons talk to the engine; its refusals ("CI isn't failing right now", gh errors) must reach the user.
   const act = (label: string, fn: () => Promise<unknown>) =>
     fn().then(() => setNotice(undefined), (e) => setNotice(`${label}: ${String((e as Error).message || e)}`));
+  const togglePick = (key: string) =>
+    setPicked((s) => {
+      const n = new Set(s);
+      if (n.has(key)) n.delete(key);
+      else n.add(key);
+      return n;
+    });
+  // The dialog prefills the project's template; the engine fills {approved_ago} only for automatic sends.
+  const openCompose = (keys: string[]) => {
+    const tickets = keys.map((k) => state.tickets[k]).filter(Boolean);
+    if (tickets.length === 0) return;
+    const p = projects[tickets[0].projectId];
+    const vars = (t: Ticket) => ({ key: t.key, summary: t.summary, pr_url: t.prUrl || "", pr_number: String(t.pr?.number ?? ""), project: projects[t.projectId]?.name || "", branch: t.branch, approved_ago: "" });
+    const fillT = (tpl: string, v: Record<string, string>) => tpl.replace(/\{(\w+)\}/g, (m, k: string) => (k in v ? v[k] : m));
+    const projectIds = new Set(tickets.map((t) => t.projectId));
+    // One project: show the finished text. Several projects (several channels): keep {list} so the engine
+    // fills each channel with only its own PRs.
+    const text =
+      keys.length === 1
+        ? fillT(p?.messaging.templates.manual || "{key}: {pr_url}", vars(tickets[0]))
+        : projectIds.size === 1
+          ? fillT(p?.messaging.templates.bulk || "{list}", { ...vars(tickets[0]), list: tickets.map((t) => `- ${t.key} — ${t.summary}: ${t.prUrl || "(no PR yet)"}`).join("\n") })
+          : fillT(p?.messaging.templates.bulk || "{list}", { ...vars(tickets[0]), project: "" });
+    setCompose({ keys, text });
+  };
+  const sendCompose = async () => {
+    if (!compose) return;
+    setCompose({ ...compose, sending: true });
+    try {
+      if (compose.keys.length === 1) await api.sendMessage(compose.keys[0], compose.text);
+      else {
+        const r = await api.sendBulk(compose.keys, compose.text);
+        if (r.failed.length) throw new Error(r.failed.map((f) => `${f.key}: ${f.error}`).join("; "));
+      }
+      setCompose(undefined);
+      setPicked(new Set());
+      setNotice(undefined);
+    } catch (e) {
+      setCompose({ ...compose, sending: false, result: String((e as Error).message || e) });
+    }
+  };
+  const msgPill = (t: Ticket) => {
+    const m = t.messages?.[t.messages.length - 1];
+    if (!m) return null;
+    return <span className={`pill ${m.ok ? "ok" : "bad"}`} title={m.error || m.text}>💬 {m.ok ? "sent" : "failed"}</span>;
+  };
+  const pickBox = (t: Ticket) => (
+    <td onClick={stop} style={{ width: 28 }}>
+      <input type="checkbox" checked={picked.has(t.key)} onChange={() => togglePick(t.key)} title="Select for a combined collab message" />
+    </td>
+  );
+  const sendBtn = (t: Ticket) => <button className="btn sm ghost" onClick={() => openCompose([t.key])} title="Send to collab">💬</button>;
 
   return (
     <div className="page">
@@ -87,6 +141,14 @@ export function Dashboard({
           <span className="t">{notice}</span>
           <div className="spacer" />
           <button className="btn ghost sm" onClick={() => setNotice(undefined)} title="Dismiss">✕</button>
+        </div>
+      )}
+      {picked.size > 0 && (
+        <div className="callout info" style={{ marginBottom: 12 }}>
+          <span className="t">{picked.size} selected</span>
+          <div className="spacer" />
+          <button className="btn sm primary" onClick={() => openCompose([...picked])}>Send to collab</button>
+          <button className="btn sm ghost" onClick={() => setPicked(new Set())}>Clear</button>
         </div>
       )}
       {pollErrors.map(([pid, err]) => (
@@ -157,7 +219,7 @@ export function Dashboard({
               <div className="section-head"><div className="card-title" style={{ margin: 0 }}>Pull requests</div><span className="count">{prs.length}</span></div>
               <div className="table-wrap">
                 <table className={`tickets ${sel ? "compact" : ""}`}>
-                  <thead><tr><th>Ticket</th><th>Status</th><th>CI</th><th>Review</th><th>Updated</th><th /></tr></thead>
+                  <thead><tr><th /><th>Ticket</th><th>Status</th><th>CI</th><th>Review</th><th>Updated</th><th /></tr></thead>
                   <tbody>
                     {prs.map((t) => {
                       const p = projects[t.projectId];
@@ -165,16 +227,20 @@ export function Dashboard({
                       const err = state.prCheckErrors?.[t.key];
                       return (
                         <tr key={t.key} className={rowCls(t)} onClick={() => toggle(t)}>
+                          {pickBox(t)}
                           <td>
                             <div className="key">{t.key}</div>
                             <div className="summary small muted">{t.summary}</div>
                             {err && <div className="err-line" title={err}>PR check failed: {err.slice(0, 80)}</div>}
                           </td>
                           <td>
-                            <StatusBadge
-                              status={t.status}
-                              label={fixing ? `${t.status === "queued" ? "Fix queued" : "Fixing CI"} ${t.fix!.round}/${Math.max(t.fix!.round, p?.ciFixMaxRounds ?? 0)}` : undefined}
-                            />
+                            <div className="row" style={{ gap: 6 }}>
+                              <StatusBadge
+                                status={t.status}
+                                label={fixing ? `${t.status === "queued" ? "Fix queued" : "Fixing CI"} ${t.fix!.round}/${Math.max(t.fix!.round, p?.ciFixMaxRounds ?? 0)}` : undefined}
+                              />
+                              {msgPill(t)}
+                            </div>
                           </td>
                           <td><CiPill ci={t.pr?.ci} /></td>
                           <td><ReviewPill decision={t.pr?.reviewDecision} /></td>
@@ -183,6 +249,7 @@ export function Dashboard({
                             <div className="row" style={{ gap: 6, justifyContent: "flex-end" }}>
                               {t.status === "pr_draft" && <button className="btn sm primary" onClick={() => act(`Publish ${t.key}`, () => api.publish(t.key))}>Publish</button>}
                               {t.status === "pr_ci_failed" && <button className="btn sm primary" onClick={() => act(`Fix CI ${t.key}`, () => api.fixCi(t.key))}>Fix CI</button>}
+                              {sendBtn(t)}
                               {prLink(t)}
                             </div>
                           </td>
@@ -201,17 +268,18 @@ export function Dashboard({
               <div className="section-head"><div className="card-title" style={{ margin: 0 }}>Approved, not merged</div><span className="count">{approved.length}</span></div>
               <div className="table-wrap">
                 <table className={`tickets ${sel ? "compact" : ""}`}>
-                  <thead><tr><th>Ticket</th><th>Approved</th><th>Waiting</th><th /></tr></thead>
+                  <thead><tr><th /><th>Ticket</th><th>Approved</th><th>Waiting</th><th /></tr></thead>
                   <tbody>
                     {approved.map((t) => {
                       const limit = projects[t.projectId]?.mergeNudgeAfterMin ?? 30;
                       const waitedMin = t.pr?.approvedAt ? (Date.now() - new Date(t.pr.approvedAt).getTime()) / 60_000 : 0;
                       return (
                         <tr key={t.key} className={rowCls(t)} onClick={() => toggle(t)}>
-                          <td><div className="key">{t.key}</div><div className="summary small muted">{t.summary}</div></td>
+                          {pickBox(t)}
+                          <td><div className="key">{t.key}</div><div className="summary small muted">{t.summary}</div>{msgPill(t)}</td>
                           <td className="small muted">{ago(t.pr?.approvedAt)}</td>
                           <td className={`small ${waitedMin >= limit ? "overdue" : "muted"}`}>{t.pr?.approvedAt ? duration(t.pr.approvedAt) : "—"}{t.pr?.mergeNudgedAt ? " · nudged" : ""}</td>
-                          <td onClick={stop}><div className="row" style={{ justifyContent: "flex-end" }}>{prLink(t)}</div></td>
+                          <td onClick={stop}><div className="row" style={{ gap: 6, justifyContent: "flex-end" }}>{sendBtn(t)}{prLink(t)}</div></td>
                         </tr>
                       );
                     })}
@@ -253,8 +321,27 @@ export function Dashboard({
           )}
         </div>
 
-        {sel && <TicketDetail api={api} ticket={sel} project={projects[sel.projectId]} prError={state.prCheckErrors?.[sel.key]} onClose={() => setSelected(undefined)} />}
+        {sel && <TicketDetail api={api} ticket={sel} project={projects[sel.projectId]} prError={state.prCheckErrors?.[sel.key]} onCompose={openCompose} onClose={() => setSelected(undefined)} />}
       </div>
+
+      {compose && (
+        <div className="modal-backdrop" onClick={() => !compose.sending && setCompose(undefined)}>
+          <div className="modal card card-pad" onClick={stop}>
+            <h3 className="card-title">Send to collab</h3>
+            <p className="card-sub">
+              {compose.keys.join(", ")} →{" "}
+              {[...new Set(compose.keys.map((k) => state.tickets[k]?.projectId))].map((pid) => projects[pid!]?.messaging.channelName || projects[pid!]?.name || "the project's channel").join(", ")}
+              {new Set(compose.keys.map((k) => state.tickets[k]?.projectId)).size > 1 && " · several projects: keep {list} in the text, each channel gets only its own PRs"}
+            </p>
+            <textarea className="textarea" rows={6} value={compose.text} onChange={(e) => setCompose({ ...compose, text: e.target.value })} />
+            {compose.result && <div className="callout err" style={{ marginTop: 10 }}><span className="t">{compose.result}</span></div>}
+            <div className="row" style={{ marginTop: 12, justifyContent: "flex-end" }}>
+              <button className="btn" onClick={() => setCompose(undefined)} disabled={compose.sending}>Cancel</button>
+              <button className="btn primary" onClick={sendCompose} disabled={compose.sending || !compose.text.trim()}>{compose.sending ? "Sending…" : "Send"}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -280,7 +367,7 @@ function Chain({ ticket, project }: { ticket: Ticket; project?: ProjectConfig })
   );
 }
 
-function TicketDetail({ api, ticket, project, prError, onClose }: { api: Api; ticket: Ticket; project?: ProjectConfig; prError?: string; onClose: () => void }) {
+function TicketDetail({ api, ticket, project, prError, onCompose, onClose }: { api: Api; ticket: Ticket; project?: ProjectConfig; prError?: string; onCompose: (keys: string[]) => void; onClose: () => void }) {
   const [log, setLog] = useState("");
   const [term, setTerm] = useState<{ ok: boolean; text: string }>();
   const logRef = useRef<HTMLPreElement>(null);
@@ -353,6 +440,9 @@ function TicketDetail({ api, ticket, project, prError, onClose }: { api: Api; ti
         <div className="row" style={{ marginTop: 10, flexWrap: "wrap" }}>
           {ticket.prUrl && (
             <button className="btn sm primary" onClick={() => openExternal(ticket.prUrl!)}>Open PR ↗</button>
+          )}
+          {ticket.prUrl && (
+            <button className="btn sm" onClick={() => onCompose([ticket.key])} title="Post about this PR in the project's collab channel">💬 Send to collab</button>
           )}
           {ticket.status === "pr_draft" && <button className="btn sm" onClick={() => run(() => api.publish(ticket.key))} title="gh pr ready — marks the PR ready for review">Publish</button>}
           {ticket.status === "pr_ci_failed" && <button className="btn sm primary" onClick={() => run(() => api.fixCi(ticket.key))} title="Run the agent chain on the failing checks now">Fix CI</button>}
@@ -464,6 +554,23 @@ function TicketDetail({ api, ticket, project, prError, onClose }: { api: Api; ti
         </div>
 
         <div>
+          {ticket.messages && ticket.messages.length > 0 && (
+            <>
+              <div className="section-label">Messages</div>
+              <div className="timeline" style={{ marginBottom: 14 }}>
+                {[...ticket.messages].reverse().map((m, i) => (
+                  <div key={i} className="tl-item">
+                    <span className="tl-icon" style={{ background: m.ok ? "var(--accent-soft)" : "var(--red-soft)", color: m.ok ? "var(--accent)" : "var(--red)" }}>💬</span>
+                    <div>
+                      <div style={{ fontWeight: 550 }}>{m.kind.replace("_", " ")} → {m.channelName || m.channelId}</div>
+                      <div className="small muted" style={{ whiteSpace: "pre-wrap" }}>{m.ok ? m.text : m.error}</div>
+                    </div>
+                    <span className="small faint">{ago(m.at)}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
           <div className="section-label">Live log</div>
           <pre className="log" ref={logRef}>{log || "No output yet."}</pre>
         </div>

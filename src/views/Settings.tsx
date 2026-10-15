@@ -1,12 +1,33 @@
 import { useEffect, useState } from "react";
-import type { Config, Settings } from "../../engine/src/types";
-import { setLaunchAtLogin, type Api, type DoctorItem } from "../api";
+import type { AccountStatus, Config, Settings } from "../../engine/src/types";
+import { openExternal, setLaunchAtLogin, type Api, type DoctorItem } from "../api";
 import { Toggle } from "../ui";
 
 export function SettingsView({ api, config }: { api: Api; config: Config }) {
   const [doctor, setDoctor] = useState<DoctorItem[]>();
   const [checking, setChecking] = useState(false);
+  const [acct, setAcct] = useState<AccountStatus>();
+  const [loginMsg, setLoginMsg] = useState<string>();
   const s = config.settings;
+  const sm = s.accounts.setmore;
+  const updateSetmore = (patch: Partial<typeof sm>) => update({ accounts: { setmore: { ...sm, ...patch } } });
+
+  useEffect(() => {
+    api.setmoreStatus().then(setAcct).catch(() => {});
+    return api.subscribe((e) => {
+      if (e.type === "account" && e.name === "setmore") setAcct(e.status);
+    });
+  }, []);
+  const login = async () => {
+    setLoginMsg(undefined);
+    try {
+      const { url } = await api.setmoreLogin();
+      await openExternal(url);
+      setLoginMsg("Finish signing in in your browser, then come back here.");
+    } catch (e) {
+      setLoginMsg(String((e as Error).message || e));
+    }
+  };
 
   const update = async (patch: Partial<Settings>) => {
     if (patch.launchAtLogin !== undefined) await setLaunchAtLogin(patch.launchAtLogin).catch(() => {});
@@ -87,6 +108,37 @@ export function SettingsView({ api, config }: { api: Api; config: Config }) {
         <div className="setting-row">
           <div className="txt"><b>Closing the window</b><span>HandsFree keeps running in the menu bar. Quit from the menu bar icon.</span></div>
         </div>
+      </div>
+
+      <div className="card card-pad" style={{ marginBottom: 16 }}>
+        <h3 className="card-title">Accounts</h3>
+        <p className="card-sub">Setmore collab messages are sent as you. HandsFree signs in once with the client id the auth team issued; tokens stay on this Mac.</p>
+        <div className="field">
+          <label>Setmore client id</label>
+          <input className="input code" value={sm.clientId} placeholder="from the auth team" onChange={(e) => updateSetmore({ clientId: e.target.value })} />
+          <span className="hint">Registered redirect URI: <span className="mono">http://127.0.0.1:{sm.redirectPort}/oauth/callback</span></span>
+        </div>
+        <div className="setting-row">
+          <div className="txt">
+            <b>{acct?.loggedIn ? `Signed in${acct.user ? ` as ${acct.user}` : ""}` : acct?.loginPending ? "Waiting for the browser…" : "Not signed in"}</b>
+            <span className={acct?.error ? "err-text" : ""}>{acct?.error || (acct?.loggedIn ? `Scopes: ${acct.scope || "—"}` : "Enter the client id, then log in.")}</span>
+          </div>
+          {acct?.loggedIn ? (
+            <button className="btn sm" onClick={() => api.setmoreLogout().then(() => api.setmoreStatus().then(setAcct))}>Log out</button>
+          ) : (
+            <button className="btn sm primary" disabled={!sm.clientId.trim() || acct?.loginPending} onClick={login}>Log in</button>
+          )}
+        </div>
+        {loginMsg && <div className="callout info"><span className="t">{loginMsg}</span></div>}
+        <details>
+          <summary className="small muted" style={{ cursor: "pointer" }}>Advanced</summary>
+          <div className="grid3" style={{ marginTop: 10 }}>
+            <div className="field"><label>Redirect port</label><input className="input num-input" type="number" min={1024} max={65535} value={sm.redirectPort} onChange={(e) => updateSetmore({ redirectPort: Number(e.target.value) || 47831 })} /></div>
+            <div className="field"><label>MCP URL</label><input className="input code" value={sm.mcpUrl} onChange={(e) => updateSetmore({ mcpUrl: e.target.value })} /></div>
+            <div className="field"><label>Issuer</label><input className="input code" value={sm.issuer} onChange={(e) => updateSetmore({ issuer: e.target.value })} /></div>
+          </div>
+          <div className="field"><label>Scopes</label><input className="input code" value={sm.scopes} onChange={(e) => updateSetmore({ scopes: e.target.value })} /></div>
+        </details>
       </div>
 
       <div className="card card-pad">

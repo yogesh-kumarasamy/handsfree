@@ -1,6 +1,9 @@
 import type { Api, DemoOptions } from "./api";
 import {
   AGENT_PRESETS,
+  DEFAULT_AGENT_MESSAGE_COMMAND,
+  DEFAULT_SETMORE_ACCOUNT,
+  DEFAULT_TEMPLATES,
   PR_STATUSES,
   DEFAULT_JIRA_COMMENT,
   DEFAULT_JIRA_SEARCH,
@@ -25,6 +28,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
     settings: {
       pollIntervalMin: 15,
       prPollIntervalMin: 3,
+      accounts: { setmore: { ...DEFAULT_SETMORE_ACCOUNT, clientId: "hf-demo" } },
       maxParallel: 3,
       agentTimeoutMin: 90,
       slowAfterMin: 30,
@@ -62,6 +66,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
               ciAutoFix: true,
               ciFixMaxRounds: 2,
               mergeNudgeAfterMin: 30,
+              messaging: { platform: "setmore", channelId: "nN0pGzAWVcudEnhemVADfwCZi6iUlMiW", channelName: "ChatSupport Team Core", templates: { ...DEFAULT_TEMPLATES }, agentCommand: DEFAULT_AGENT_MESSAGE_COMMAND },
             },
             {
               id: "p2",
@@ -80,6 +85,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
               ciAutoFix: true,
               ciFixMaxRounds: 2,
               mergeNudgeAfterMin: 30,
+              messaging: { platform: "none", channelId: "", channelName: "", templates: { ...DEFAULT_TEMPLATES }, agentCommand: DEFAULT_AGENT_MESSAGE_COMMAND },
             },
           ],
   };
@@ -113,7 +119,7 @@ const pr = (number: number, repo: string, over: Partial<PrInfo> = {}): PrInfo =>
 });
 
 function demoState(scenario: DemoOptions["scenario"]): EngineState {
-  if (scenario === "empty") return { tickets: {}, pollErrors: {}, prCheckErrors: {} };
+  if (scenario === "empty") return { tickets: {}, pollErrors: {}, prCheckErrors: {}, accounts: { setmore: { loggedIn: false } } };
   const list: Ticket[] = [
     t({
       key: "CSW-1421",
@@ -237,6 +243,7 @@ function demoState(scenario: DemoOptions["scenario"]): EngineState {
     nextPollAt: new Date(Date.now() + 9 * 60_000).toISOString(),
     pollErrors: {},
     prCheckErrors: {},
+    accounts: { setmore: { loggedIn: true, user: "yogesh@anywhere.co" } },
   };
 }
 
@@ -287,6 +294,38 @@ export function createMockApi(opts: DemoOptions): Api {
     },
     pollNow: ok,
     checkPrsNow: ok,
+    sendMessage: async (k, text) => {
+      const t = state.tickets[k];
+      const rec = { kind: "manual" as const, at: new Date().toISOString(), platform: "setmore" as const, channelId: "nN0p", channelName: "ChatSupport Team Core", text: text || `${k} — ${t?.summary}: ${t?.prUrl}`, ok: true, id: "m-demo" };
+      if (t) {
+        state = { ...state, tickets: { ...state.tickets, [k]: { ...t, messages: [...(t.messages || []), rec] } } };
+        emit({ type: "state", state });
+      }
+      return rec;
+    },
+    sendBulk: async (keys, text) => {
+      const recs = keys.map(() => ({ kind: "bulk" as const, at: new Date().toISOString(), platform: "setmore" as const, channelId: "nN0p", channelName: "ChatSupport Team Core", text: text || `Hi team, these PRs need eyes:\n${keys.map((x) => `- ${x}`).join("\n")}`, ok: true, id: "m-demo" }));
+      return { sent: recs, failed: [] };
+    },
+    testMessage: async () => ({ ok: true }),
+    listChannels: async (_p, query) => ({
+      channels: [
+        { id: "nN0pGzAWVcudEnhemVADfwCZi6iUlMiW", name: "ChatSupport Team Core" },
+        { id: "UN1xRascNHnbVXP99Pw2ztIQfgPTt7qF", name: "CBA: Core Team" },
+      ].filter((c) => !query || c.name.toLowerCase().includes(query.toLowerCase())),
+    }),
+    setmoreStatus: async () => state.accounts.setmore,
+    setmoreLogin: async () => {
+      setTimeout(() => {
+        state = { ...state, accounts: { setmore: { loggedIn: true, user: "yogesh@anywhere.co" } } };
+        emit({ type: "account", name: "setmore", status: state.accounts.setmore });
+      }, 1000);
+      return { url: "https://auth.setmore.com/o/oauth2/auth?demo=1" };
+    },
+    setmoreLogout: async () => {
+      state = { ...state, accounts: { setmore: { loggedIn: false } } };
+      emit({ type: "account", name: "setmore", status: state.accounts.setmore });
+    },
     publish: async (k) => {
       const t = state.tickets[k];
       if (t?.pr) {

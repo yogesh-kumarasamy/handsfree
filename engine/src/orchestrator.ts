@@ -4,10 +4,12 @@ import { changedFiles, commitAll, commitsAhead, ensureWorktree, hasUncommitted, 
 import { createStreamFormatter } from "./streamfmt";
 import { failedCheckLogs, fetchPr, openPr, publishPr } from "./github";
 import { commentOnIssue, searchIssues } from "./jira";
+import { TokenStore } from "./messaging/oauth";
+import { MessagingService } from "./messaging/service";
 import { PrEvents } from "./prevents";
 import { buildFixPrompt, mergeNudgeDue, nextStatus, shouldAutoFix, toPrInfo, type RawPr } from "./prstate";
 import { exec, fill, q, SHELL, start, type Running } from "./shell";
-import { loadConfig, loadState, logFile, normalizeProject, saveConfig, saveState } from "./store";
+import { DATA_DIR, loadConfig, loadState, logFile, normalizeProject, normalizeSettings, saveConfig, saveState } from "./store";
 import {
   CLAUDE_RESUME,
   PR_STATUSES,
@@ -39,6 +41,16 @@ export class Orchestrator {
   private stateTimer?: NodeJS.Timeout;
   /** Once-per-PR lifecycle events. Default subscriber: notification + log. Messaging (roadmap item 3) subscribes here too. */
   prEvents = new PrEvents();
+  /** Collab messages (Setmore direct or agent-driven); subscribes to prEvents in start(). */
+  messaging = new MessagingService({
+    config: () => this.config,
+    state: () => this.state,
+    log: (k, s) => this.log(k, s),
+    notify: (t, b) => this.notify(t, b, "failed"),
+    persist: () => this.persist(),
+    emit: (e) => this.emit(e),
+    tokens: new TokenStore(path.join(DATA_DIR, "auth", "setmore.json")),
+  });
   private prTimer?: NodeJS.Timeout;
   private checkingPrs = false;
 
@@ -54,6 +66,8 @@ export class Orchestrator {
     }
     this.persist();
     this.prEvents.on((e) => this.onPrEvent(e));
+    this.prEvents.on((e) => void this.messaging.onPrEvent(e));
+    this.messaging.init();
     this.schedulePoll(3000);
     this.schedulePrCheck(5000);
   }
@@ -106,9 +120,11 @@ export class Orchestrator {
     const wasPaused = this.config.settings.paused;
     this.config = {
       version: 1,
-      settings: { ...this.config.settings, ...next.settings },
+      settings: normalizeSettings({ ...this.config.settings, ...next.settings }),
       projects: (next.projects || []).map(normalizeProject),
     };
+    // Account settings (client id, URLs) may have changed: the next messaging call builds a fresh adapter.
+    this.messaging.settingsChanged();
     saveConfig(this.config);
     this.emit({ type: "config", config: this.config });
     if (prevInterval !== this.config.settings.pollIntervalMin || (wasPaused && !this.config.settings.paused)) this.schedulePoll(1000);
@@ -181,8 +197,14 @@ export class Orchestrator {
     this.prTimer = setTimeout(() => void this.checkPrs(), ms);
   }
 
+  private recheckPrs = false;
+
   async checkPrs() {
-    if (this.checkingPrs) return;
+    // A check requested while one is running (Check PRs now, a fresh PR) must not be dropped: run again right after.
+    if (this.checkingPrs) {
+      this.recheckPrs = true;
+      return;
+    }
     this.checkingPrs = true;
     try {
       for (const t of Object.values(this.state.tickets)) {
@@ -193,7 +215,12 @@ export class Orchestrator {
       this.state.lastPrCheckAt = now();
     } finally {
       this.checkingPrs = false;
-      this.schedulePrCheck();
+      if (this.recheckPrs) {
+        this.recheckPrs = false;
+        this.schedulePrCheck(200);
+      } else {
+        this.schedulePrCheck();
+      }
       this.pump();
     }
   }
@@ -767,6 +794,7 @@ export class Orchestrator {
     this.persist();
   }
   shutdown() {
+    this.messaging.shutdown();
     clearTimeout(this.prTimer);
     for (const r of this.running.values()) r?.kill();
   }
