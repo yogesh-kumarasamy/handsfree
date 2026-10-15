@@ -4,6 +4,8 @@ import path from "node:path";
 import {
   CLAUDE_RESUME,
   DEFAULT_AGENT_MESSAGE_COMMAND,
+  DEFAULT_DONE_STATUS,
+  DEFAULT_LINEAR_ACCOUNT,
   DEFAULT_SETMORE_ACCOUNT,
   DEFAULT_TEMPLATES,
   type Config,
@@ -11,6 +13,8 @@ import {
   type MessagingConfig,
   type ProjectConfig,
   type Settings,
+  type TrackerConfig,
+  type TrackerKind,
 } from "./types";
 
 export const DATA_DIR =
@@ -34,13 +38,17 @@ export const DEFAULT_SETTINGS: Settings = {
   paused: false,
   notifications: true,
   launchAtLogin: false,
-  accounts: { setmore: { ...DEFAULT_SETMORE_ACCOUNT } },
+  accounts: { setmore: { ...DEFAULT_SETMORE_ACCOUNT }, linear: { ...DEFAULT_LINEAR_ACCOUNT } },
 };
 
 export function normalizeSettings(raw: Partial<Settings> | undefined): Settings {
   const s = { ...DEFAULT_SETTINGS, ...(raw || {}) };
-  s.accounts = { setmore: { ...DEFAULT_SETMORE_ACCOUNT, ...(raw?.accounts?.setmore || {}) } };
+  s.accounts = {
+    setmore: { ...DEFAULT_SETMORE_ACCOUNT, ...(raw?.accounts?.setmore || {}) },
+    linear: { ...DEFAULT_LINEAR_ACCOUNT, ...(raw?.accounts?.linear || {}) },
+  };
   s.accounts.setmore.redirectPort = clamp(s.accounts.setmore.redirectPort, 1024, 65535, DEFAULT_SETMORE_ACCOUNT.redirectPort);
+  s.accounts.linear.redirectPort = clamp(s.accounts.linear.redirectPort, 1024, 65535, DEFAULT_LINEAR_ACCOUNT.redirectPort);
   s.prPollIntervalMin = clamp(s.prPollIntervalMin, 1, 60, DEFAULT_SETTINGS.prPollIntervalMin);
   return s;
 }
@@ -70,7 +78,39 @@ function writeJsonAtomic(file: string, data: unknown) {
   fs.renameSync(tmp, file);
 }
 
-export function normalizeProject(p: Partial<ProjectConfig>): ProjectConfig {
+type LegacyJiraFields = { jql?: string; jiraSearchCommand?: string; jiraCommentCommand?: string };
+
+export function normalizeTracker(p: Partial<ProjectConfig> & LegacyJiraFields): TrackerConfig {
+  const t = p.tracker as Partial<TrackerConfig> | undefined;
+  if (!t) {
+    // 0.1 config: Jira only. There an empty comment command meant "don't comment"; now "-" says that.
+    return {
+      kind: "jira",
+      query: p.jql || "",
+      searchCommand: p.jiraSearchCommand ?? "",
+      commentCommand: p.jiraCommentCommand?.trim() ? p.jiraCommentCommand : "-",
+      transitionCommand: "",
+      doneStatus: "Done",
+      repo: "",
+      linearAssignee: "me",
+      linearState: "Todo",
+    };
+  }
+  const kind: TrackerKind = t.kind === "github" || t.kind === "linear" ? t.kind : "jira";
+  return {
+    kind,
+    query: t.query || "",
+    searchCommand: t.searchCommand ?? "",
+    commentCommand: t.commentCommand ?? "",
+    transitionCommand: t.transitionCommand ?? "",
+    doneStatus: t.doneStatus ?? DEFAULT_DONE_STATUS[kind],
+    repo: t.repo || "",
+    linearAssignee: t.linearAssignee ?? "me",
+    linearState: t.linearState ?? "Todo",
+  };
+}
+
+export function normalizeProject(p: Partial<ProjectConfig> & LegacyJiraFields): ProjectConfig {
   return {
     id: p.id || cryptoId(),
     name: p.name || "Untitled",
@@ -78,9 +118,7 @@ export function normalizeProject(p: Partial<ProjectConfig>): ProjectConfig {
     repoPath: p.repoPath || "",
     baseBranch: p.baseBranch || "main",
     remote: p.remote || "origin",
-    jql: p.jql || "",
-    jiraSearchCommand: p.jiraSearchCommand ?? "",
-    jiraCommentCommand: p.jiraCommentCommand ?? "",
+    tracker: normalizeTracker(p),
     mcpJson: p.mcpJson ?? '{\n  "mcpServers": {}\n}',
     agents: (p.agents || []).slice(0, 4).map((a) => ({
       id: a.id || cryptoId(),
@@ -137,7 +175,7 @@ export function migrateState(raw: Partial<EngineState> | undefined, cfg: Config)
     nextPollAt: raw?.nextPollAt,
     lastPrCheckAt: raw?.lastPrCheckAt,
     nextPrCheckAt: raw?.nextPrCheckAt,
-    accounts: { setmore: raw?.accounts?.setmore || { loggedIn: false } },
+    accounts: { setmore: raw?.accounts?.setmore || { loggedIn: false }, linear: raw?.accounts?.linear || { loggedIn: false } },
   };
 }
 

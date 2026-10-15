@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -p tsconfig.json --noEmit && vite build",
     "build:engine": "esbuild engine/src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=engine/dist/handsfree-engine.mjs",
-    "build:test": "esbuild engine/src/prstate.ts engine/src/store.ts engine/src/messaging/templates.ts engine/src/messaging/oauth.ts engine/src/messaging/mcpclient.ts engine/src/messaging/setmore.ts engine/src/messaging/agent.ts engine/src/messaging/service.ts --bundle --platform=node --format=esm --target=node20 --outbase=engine/src --outdir=engine/dist/test",
+    "build:test": "esbuild engine/src/prstate.ts engine/src/store.ts engine/src/messaging/templates.ts engine/src/messaging/oauth.ts engine/src/messaging/mcpclient.ts engine/src/messaging/setmore.ts engine/src/messaging/agent.ts engine/src/messaging/service.ts engine/src/oauthlogin.ts engine/src/trackers/jira.ts engine/src/trackers/github.ts engine/src/trackers/linear.ts engine/src/trackers/service.ts --bundle --platform=node --format=esm --target=node20 --outbase=engine/src --outdir=engine/dist/test",
     "engine": "npm run build:engine && node engine/dist/handsfree-engine.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p engine/tsconfig.json --noEmit",
     "test:unit": "npm run build:test && node --test engine/test/*.test.mjs",

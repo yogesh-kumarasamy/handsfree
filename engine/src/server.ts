@@ -1,6 +1,5 @@
 import http from "node:http";
 import { repoInfo } from "./git";
-import { searchIssues } from "./jira";
 import type { Orchestrator } from "./orchestrator";
 import { exec, SHELL } from "./shell";
 import { normalizeProject } from "./store";
@@ -9,7 +8,9 @@ import type { Config, ProjectConfig } from "./types";
 const ALLOWED_ORIGINS = new Set(["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost", "http://localhost:1420"]);
 
 async function doctor(o: Orchestrator) {
-  const names = new Set(["git", "gh", "acli"]);
+  const names = new Set(["git", "gh"]);
+  // acli only matters to projects that use Jira.
+  if (o.config.projects.some((p) => p.tracker.kind === "jira")) names.add("acli");
   for (const p of o.config.projects) for (const a of p.agents) if (a.enabled && a.command.trim()) names.add(a.command.trim().split(/\s+/)[0]);
   const items = await Promise.all(
     [...names].map(async (name) => {
@@ -143,13 +144,24 @@ export function startServer(o: Orchestrator, port: number, token: string) {
         case "POST /api/accounts/setmore/logout":
           await o.messaging.logout();
           return send(200, {});
+        case "GET /api/accounts/linear":
+          return send(200, o.trackers.status());
+        case "POST /api/accounts/linear/login":
+          try {
+            return send(200, { url: await o.trackers.loginUrl() });
+          } catch (e) {
+            return send(400, { error: (e as Error).message });
+          }
+        case "POST /api/accounts/linear/logout":
+          await o.trackers.logout();
+          return send(200, {});
         case "POST /api/check-prs-now":
           o.checkPrsNow();
           return send(200, {});
-        case "POST /api/test-jira": {
+        case "POST /api/test-tracker": {
           const { project } = await body<{ project: ProjectConfig }>();
           try {
-            return send(200, await searchIssues(normalizeProject(project)));
+            return send(200, { issues: await o.trackers.trackerFor(normalizeProject(project)).search() });
           } catch (e) {
             return send(200, { issues: [], error: (e as Error).message });
           }

@@ -122,7 +122,7 @@ export default function App() {
         <div className="sidebar-foot">
           <div className="engine-line">
             <span className="dot" style={{ color: paused ? "var(--amber)" : active ? "var(--accent)" : "var(--faint)" }} />
-            {paused ? "Paused" : active ? "Watching Jira" : "Idle"}
+            {paused ? "Paused" : active ? "Watching tickets" : "Idle"}
           </div>
           <div className="engine-sub">
             {paused
