@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Config, EngineState } from "../engine/src/types";
 import { getApi, notify, onTrayTogglePause, type Api } from "./api";
-import { Icon, Logo, until } from "./ui";
+import { Icon, Logo, until, useTick } from "./ui";
 import { Dashboard } from "./views/Dashboard";
 import { Projects } from "./views/Projects";
 import { SettingsView } from "./views/Settings";
@@ -19,22 +19,36 @@ export default function App() {
     demo?.editorNew ? "new" : demo?.editorStep !== undefined ? "p1" : null,
   );
 
+  const [gen, setGen] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  useTick();
+
+  // Bumping `gen` (the Refresh button) tears down the event stream, refetches, and resubscribes.
   useEffect(() => {
     let unsub = () => {};
+    let alive = true;
+    setRefreshing(true);
     getApi()
       .then(async (a) => {
         setApi(a);
-        setConfig(await a.getConfig());
-        setState(await a.getState());
+        const [c, s] = await Promise.all([a.getConfig(), a.getState()]);
+        if (!alive) return;
+        setConfig(c);
+        setState(s);
+        setError(undefined);
         unsub = a.subscribe((e) => {
           if (e.type === "state") setState(e.state);
           if (e.type === "config") setConfig(e.config);
           if (e.type === "notify") void notifyIfEnabled(e.title, e.body);
         });
       })
-      .catch((e) => setError(String(e?.message || e)));
-    return () => unsub();
-  }, []);
+      .catch((e) => setError(String(e?.message || e)))
+      .finally(() => setRefreshing(false));
+    return () => {
+      alive = false;
+      unsub();
+    };
+  }, [gen]);
 
   // Read the latest notification setting without re-subscribing.
   const notifyIfEnabled = async (title: string, body: string) => {
@@ -114,9 +128,14 @@ export default function App() {
                 ? `Next check ${until(state.nextPollAt)}`
                 : "Add a project to start"}
           </div>
-          <button className="btn sm" onClick={togglePause}>
-            {paused ? Icon.play : Icon.pause} {paused ? "Resume" : "Pause"}
-          </button>
+          <div className="row" style={{ gap: 6 }}>
+            <button className="btn sm" onClick={togglePause}>
+              {paused ? Icon.play : Icon.pause} {paused ? "Resume" : "Pause"}
+            </button>
+            <button className="btn sm ghost" onClick={() => setGen((g) => g + 1)} disabled={refreshing} title="Reload config and state from the engine">
+              <span className={refreshing ? "spin" : ""}>{Icon.refresh}</span> Refresh
+            </button>
+          </div>
         </div>
       </aside>
 

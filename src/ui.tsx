@@ -1,4 +1,14 @@
+import { useEffect, useState } from "react";
 import type { TicketStatus } from "../engine/src/types";
+
+/** Re-render the caller every `ms`, so relative times ("in 11 min", "3 min ago") stay current. */
+export function useTick(ms = 15_000) {
+  const [, setN] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setN((n) => n + 1), ms);
+    return () => clearInterval(id);
+  }, [ms]);
+}
 
 export function Logo({ size = 30 }: { size?: number }) {
   // Calm mark: a quiet path (you walk) and a moving dot (it runs).

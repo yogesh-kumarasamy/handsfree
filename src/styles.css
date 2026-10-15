@@ -264,3 +264,6 @@ a.link:hover { text-decoration: underline; }
   .project-card { grid-template-columns: minmax(0, 1fr); }
   .summary { max-width: 220px; }
 }
+
+.spin { display: inline-flex; animation: hf-spin 0.9s linear infinite; }
+@keyframes hf-spin { to { transform: rotate(360deg); } }

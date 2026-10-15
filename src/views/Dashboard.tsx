@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Config, EngineState, ProjectConfig, Ticket, TicketStatus } from "../../engine/src/types";
 import { openExternal, type Api } from "../api";
-import { ago, duration, Icon, Logo, StatusBadge, until } from "../ui";
+import { ago, duration, Icon, Logo, StatusBadge, until, useTick } from "../ui";
 
 const ORDER: TicketStatus[] = ["running", "manual", "failed", "stopped", "queued", "pr_open", "done"];
 
@@ -18,6 +18,7 @@ export function Dashboard({
   initialTicket?: string;
   onNewProject: () => void;
 }) {
+  useTick();
   const [selected, setSelected] = useState<string | undefined>(initialTicket);
   const [showDone, setShowDone] = useState(false);
   const projects = useMemo(() => Object.fromEntries(config.projects.map((p) => [p.id, p])), [config]);
