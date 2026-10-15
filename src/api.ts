@@ -1,4 +1,4 @@
-import type { Config, EngineEvent, EngineState, FoundIssue, ProjectConfig } from "../engine/src/types";
+import type { AccountStatus, Config, EngineEvent, EngineState, FoundIssue, MessageRecord, ProjectConfig } from "../engine/src/types";
 import { createMockApi } from "./mock";
 
 export interface RepoInfo {
@@ -39,6 +39,15 @@ export interface Api {
   /** Run a CI fix round now (ignores the auto-fix setting and the round cap). */
   fixCi(key: string): Promise<void>;
   checkPrsNow(): Promise<void>;
+  /** Send one ticket's collab message (template-filled unless `text` is given). */
+  sendMessage(key: string, text?: string): Promise<MessageRecord>;
+  sendBulk(keys: string[], text?: string): Promise<{ sent: MessageRecord[]; failed: { key: string; error: string }[] }>;
+  testMessage(project: ProjectConfig): Promise<{ ok: boolean; error?: string }>;
+  listChannels(project: ProjectConfig, query?: string): Promise<{ channels: { id: string; name: string }[]; error?: string }>;
+  setmoreStatus(): Promise<AccountStatus>;
+  /** Starts the loopback OAuth flow; open the returned URL in the browser. */
+  setmoreLogin(): Promise<{ url: string }>;
+  setmoreLogout(): Promise<void>;
   testJira(project: ProjectConfig): Promise<{ issues: FoundIssue[]; error?: string; raw?: string }>;
   repoInfo(path: string): Promise<RepoInfo>;
   doctor(): Promise<DoctorItem[]>;
@@ -102,6 +111,13 @@ function createHttpApi(base: string, token: string): Api {
     publish: (k) => action(`/api/tickets/${encodeURIComponent(k)}/publish`, {}),
     fixCi: (k) => action(`/api/tickets/${encodeURIComponent(k)}/fix-ci`, {}),
     checkPrsNow: () => call("/api/check-prs-now", "POST"),
+    sendMessage: (k, text) => action(`/api/tickets/${encodeURIComponent(k)}/message`, { text }),
+    sendBulk: (keys, text) => call("/api/messages/bulk", "POST", { keys, text }),
+    testMessage: (project) => call("/api/messaging/test", "POST", { project }),
+    listChannels: (project, query) => call("/api/messaging/channels", "POST", { project, query }),
+    setmoreStatus: () => call("/api/accounts/setmore"),
+    setmoreLogin: () => action("/api/accounts/setmore/login", {}),
+    setmoreLogout: () => call("/api/accounts/setmore/logout", "POST"),
     testJira: (project) => call("/api/test-jira", "POST", { project }),
     repoInfo: (path) => call("/api/repo-info", "POST", { path }),
     doctor: () => call("/api/doctor"),

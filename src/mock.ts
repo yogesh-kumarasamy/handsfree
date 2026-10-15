@@ -294,6 +294,38 @@ export function createMockApi(opts: DemoOptions): Api {
     },
     pollNow: ok,
     checkPrsNow: ok,
+    sendMessage: async (k, text) => {
+      const t = state.tickets[k];
+      const rec = { kind: "manual" as const, at: new Date().toISOString(), platform: "setmore" as const, channelId: "nN0p", channelName: "ChatSupport Team Core", text: text || `${k} — ${t?.summary}: ${t?.prUrl}`, ok: true, id: "m-demo" };
+      if (t) {
+        state = { ...state, tickets: { ...state.tickets, [k]: { ...t, messages: [...(t.messages || []), rec] } } };
+        emit({ type: "state", state });
+      }
+      return rec;
+    },
+    sendBulk: async (keys, text) => {
+      const recs = keys.map(() => ({ kind: "bulk" as const, at: new Date().toISOString(), platform: "setmore" as const, channelId: "nN0p", channelName: "ChatSupport Team Core", text: text || `Hi team, these PRs need eyes:\n${keys.map((x) => `- ${x}`).join("\n")}`, ok: true, id: "m-demo" }));
+      return { sent: recs, failed: [] };
+    },
+    testMessage: async () => ({ ok: true }),
+    listChannels: async (_p, query) => ({
+      channels: [
+        { id: "nN0pGzAWVcudEnhemVADfwCZi6iUlMiW", name: "ChatSupport Team Core" },
+        { id: "UN1xRascNHnbVXP99Pw2ztIQfgPTt7qF", name: "CBA: Core Team" },
+      ].filter((c) => !query || c.name.toLowerCase().includes(query.toLowerCase())),
+    }),
+    setmoreStatus: async () => state.accounts.setmore,
+    setmoreLogin: async () => {
+      setTimeout(() => {
+        state = { ...state, accounts: { setmore: { loggedIn: true, user: "yogesh@anywhere.co" } } };
+        emit({ type: "account", name: "setmore", status: state.accounts.setmore });
+      }, 1000);
+      return { url: "https://auth.setmore.com/o/oauth2/auth?demo=1" };
+    },
+    setmoreLogout: async () => {
+      state = { ...state, accounts: { setmore: { loggedIn: false } } };
+      emit({ type: "account", name: "setmore", status: state.accounts.setmore });
+    },
     publish: async (k) => {
       const t = state.tickets[k];
       if (t?.pr) {

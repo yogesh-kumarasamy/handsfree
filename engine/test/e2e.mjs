@@ -3,9 +3,12 @@
 // Expect: fallback, push to a bare remote, draft PR, Jira comment, then cleanup after "merge".
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
+import { startFakeAuth } from "./fakes/auth-server.mjs";
+import { startFakeMcp } from "./fakes/mcp-server.mjs";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "hf-e2e-"));
 const bin = path.join(root, "bin");
@@ -49,6 +52,8 @@ esac`);
 script("fakeopen", `cp "$1" "${root}/opened.command"`);
 // a non-Claude agent that prints its session id and keeps working (for watch / take over)
 script("fakeslow", `echo "SESSION: abc-12345678"; echo "thinking…"; sleep 60`);
+// messaging agent fake: prints Claude's JSON envelope and records the prompt
+script("fakemsg", `echo "$@" >> "${root}/msg.log"; echo '{"type":"result","is_error":false,"result":"ok\\n{\\"sent\\": true, \\"id\\": \\"agent-1\\"}"}'`);
 // agent 1: edits a file, then dies on a rate limit
 script("fakegrok", `echo "working on $HANDSFREE_ISSUE"; echo "partial" > partial.txt; echo "Error: 429 rate limit exceeded" >&2; exit 1`);
 // agent 2: sees the previous work, commits
@@ -76,6 +81,12 @@ const project = {
   draftPr: true,
 };
 fs.writeFileSync(path.join(data, "config.json"), JSON.stringify({ version: 1, settings: { pollIntervalMin: 60, prPollIntervalMin: 60, maxParallel: 1, agentTimeoutMin: 5, paused: false, notifications: true, launchAtLogin: false }, projects: [project] }));
+
+// Fake Setmore: an OAuth server and an MCP server, in this process; the engine reaches them through its settings.
+const validTokens = new Set();
+const auth = await startFakeAuth({ validTokens });
+const mcp = await startFakeMcp({ validTokens });
+const cbPort = 49000 + Math.floor(Math.random() * 500);
 
 const port = 48000 + Math.floor(Math.random() * 1000);
 const token = "test-token";
@@ -183,6 +194,55 @@ try {
   await api("/api/tickets/DEMO-1/publish", "POST", {});
   assert.match(fs.readFileSync(path.join(root, "ready.log"), "utf8"), /pull\/101/);
   assert.equal((await ticket("DEMO-1")).status, "pr_ready");
+
+  // ---- Messaging: configure Setmore + log in through the fake auth server
+  const cfgM = await api("/api/config");
+  project.messaging = {
+    platform: "setmore",
+    channelId: "ch-core",
+    channelName: "ChatSupport Team Core",
+    templates: { reviewReady: "Hey team, please review {key} — {summary}: {pr_url}", mergeNudge: "Hi team, {key} is approved and waiting {approved_ago}: {pr_url}", manual: "{key}: {pr_url}", bulk: "Eyes please:\n{list}" },
+    agentCommand: "",
+  };
+  await api("/api/config", "PUT", { ...cfgM, settings: { ...cfgM.settings, accounts: { setmore: { clientId: "hf-test", redirectPort: cbPort, mcpUrl: mcp.url, issuer: auth.issuer, scopes: "openid offline_access" } } }, projects: [project] });
+  assert.equal((await api("/api/accounts/setmore")).loggedIn, false);
+  // a send without a login is recorded as failed and reported, never thrown away
+  const noLogin = await api("/api/tickets/DEMO-1/message", "POST", { text: "early" });
+  assert.match(noLogin.error, /Not logged in/);
+  assert.equal((await ticket("DEMO-1")).messages.at(-1).ok, false);
+
+  const login = await api("/api/accounts/setmore/login", "POST", {});
+  assert.match(login.url, new RegExp(`^${auth.issuer}/oauth2/auth\\?`));
+  assert.equal((await api("/api/accounts/setmore")).loginPending, true);
+  // a second click returns the same URL
+  assert.equal((await api("/api/accounts/setmore/login", "POST", {})).url, login.url);
+  const authorize = await fetch(login.url, { redirect: "manual" });
+  const callback = authorize.headers.get("location");
+  assert.match(callback, new RegExp(`^http://127\\.0\\.0\\.1:${cbPort}/oauth/callback\\?code=`));
+  // wrong state is rejected and the login stays pending
+  const bad = await fetch(callback.replace(/state=[^&]*/, "state=forged"));
+  assert.equal(bad.status, 400);
+  assert.equal((await api("/api/accounts/setmore")).loginPending, true);
+  const done = await fetch(callback);
+  assert.equal(done.status, 200);
+  assert.match(await done.text(), /Signed in/);
+  const acct = await waitFor(async () => {
+    const a = await api("/api/accounts/setmore");
+    return a.loggedIn && !a.loginPending && a;
+  }, "setmore logged in");
+  assert.equal(acct.user, "t@t.t");
+  assert.equal(auth.tokenCalls[0].resource, mcp.url, "resource indicator sent");
+
+  // port in use → clear error, not a hang
+  await api("/api/accounts/setmore/logout", "POST");
+  const blocker = http.createServer(() => {});
+  await new Promise((r) => blocker.listen(cbPort, "127.0.0.1", r));
+  assert.match((await api("/api/accounts/setmore/login", "POST", {})).error, new RegExp(`Port ${cbPort} is in use`));
+  await new Promise((r) => blocker.close(r));
+  // log in again for the rest of the run
+  const login2 = await api("/api/accounts/setmore/login", "POST", {});
+  await fetch((await fetch(login2.url, { redirect: "manual" })).headers.get("location"));
+  await waitFor(async () => (await api("/api/accounts/setmore")).loggedIn, "logged in again");
 
   // ---- Paused: CI failure is recorded, no fix queued, and nothing marks the SHA as handled
   await api("/api/pause", "POST");
@@ -329,6 +389,10 @@ try {
   await checkPrs();
   await sleep(800);
   assert.equal(((await api("/api/tickets/DEMO-1/log")).log.match(/🔔 Ready for review/g) || []).length, 1, "review_ready fired once");
+  const reviewMsg = await waitFor(async () => mcp.received.find((m) => /please review DEMO-1/.test(m.text)), "review message sent");
+  assert.equal(reviewMsg.channelId, "ch-core");
+  assert.match(reviewMsg.text, /pull\/101/);
+  assert.equal((await ticket("DEMO-1")).messages.at(-1).kind, "review_ready");
 
   // ---- Approved 2 h ago → pr_approved and a merge nudge, once
   prJson(101, { isDraft: false, headRefOid: "ddd444", reviewDecision: "APPROVED", latestReviews: [{ state: "APPROVED", submittedAt: new Date(Date.now() - 2 * 3600_000).toISOString() }], statusCheckRollup: [{ __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "SUCCESS" }] });
@@ -341,6 +405,33 @@ try {
   await checkPrs();
   await sleep(800);
   assert.equal(((await api("/api/tickets/DEMO-1/log")).log.match(/🔔 Waiting to be merged/g) || []).length, 1, "nudge fired once");
+  await waitFor(async () => mcp.received.find((m) => /approved and waiting/.test(m.text)), "nudge message sent");
+  assert.equal(mcp.received.filter((m) => /DEMO-1/.test(m.text)).length, 2, "one review + one nudge message");
+
+  // ---- Manual, bulk, 401→refresh, logout, agent adapter
+  const manual = await api("/api/tickets/DEMO-1/message", "POST", { text: "custom hello" });
+  assert.equal(manual.ok, true);
+  assert.equal(mcp.received.at(-1).text, "custom hello");
+  const bulk = await api("/api/messages/bulk", "POST", { keys: ["DEMO-1", "DEMO-2"] });
+  assert.equal(bulk.failed.length, 0);
+  assert.equal(bulk.sent.length, 2);
+  assert.match(mcp.received.at(-1).text, /^Eyes please:\n- DEMO-1 — Add greeting: .*pull\/101\n- DEMO-2 — Second ticket: .*pull\/102$/);
+  auth.rotate();
+  const afterRotate = await api("/api/tickets/DEMO-1/message", "POST", {});
+  assert.equal(afterRotate.ok, true, "401 → refresh → sent");
+  assert.equal(afterRotate.text, "DEMO-1: https://github.com/acme/repo/pull/101");
+  await api("/api/accounts/setmore/logout", "POST");
+  assert.equal((await api("/api/accounts/setmore")).loggedIn, false);
+  assert.match((await api("/api/tickets/DEMO-1/message", "POST", {})).error, /Not logged in/);
+  // agent adapter
+  project.messaging = { ...project.messaging, platform: "agent", agentCommand: "fakemsg {prompt}" };
+  await api("/api/config", "PUT", { ...(await api("/api/config")), projects: [project] });
+  const viaAgent = await api("/api/tickets/DEMO-1/message", "POST", { text: "via agent" });
+  assert.equal(viaAgent.ok, true);
+  assert.equal(viaAgent.id, "agent-1");
+  assert.match(fs.readFileSync(path.join(root, "msg.log"), "utf8"), /via agent[\s\S]*confirmationToken/);
+  project.messaging = { ...project.messaging, platform: "setmore" };
+  await api("/api/config", "PUT", { ...(await api("/api/config")), projects: [project] });
 
   prJson(101, { state: "MERGED", isDraft: false, headRefOid: "ddd444", mergedAt: "2026-10-15T10:00:00Z" });
   await checkPrs();
@@ -428,5 +519,7 @@ try {
   }
   process.exitCode = 1;
 } finally {
+  await auth.close();
+  await mcp.close();
   engine.kill("SIGTERM");
 }

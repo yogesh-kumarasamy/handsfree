@@ -57,9 +57,17 @@ export function startServer(o: Orchestrator, port: number, token: string) {
     };
 
     try {
-      const m = url.pathname.match(/^\/api\/tickets\/([^/]+)\/(retry|stop|cleanup|forget|log|open|takeover|handback|publish|fix-ci)$/);
+      const m = url.pathname.match(/^\/api\/tickets\/([^/]+)\/(retry|stop|cleanup|forget|log|open|takeover|handback|publish|fix-ci|message)$/);
       if (m) {
         const key = decodeURIComponent(m[1]);
+        if (m[2] === "message") {
+          const { text } = await body<{ text?: string }>();
+          try {
+            return send(200, await o.messaging.sendManual(key, text));
+          } catch (e) {
+            return send(400, { error: (e as Error).message });
+          }
+        }
         if (m[2] === "publish" || m[2] === "fix-ci") {
           try {
             if (m[2] === "publish") await o.publish(key);
@@ -107,6 +115,33 @@ export function startServer(o: Orchestrator, port: number, token: string) {
           return send(200, {});
         case "POST /api/poll-now":
           void o.poll();
+          return send(200, {});
+        case "POST /api/messages/bulk": {
+          const { keys, text } = await body<{ keys: string[]; text?: string }>();
+          return send(200, await o.messaging.sendBulk(Array.isArray(keys) ? keys : [], text));
+        }
+        case "POST /api/messaging/test": {
+          const { project } = await body<{ project: ProjectConfig }>();
+          return send(200, await o.messaging.sendTest(normalizeProject(project)));
+        }
+        case "POST /api/messaging/channels": {
+          const { project, query } = await body<{ project: ProjectConfig; query?: string }>();
+          try {
+            return send(200, { channels: await o.messaging.listChannels(normalizeProject(project), query) });
+          } catch (e) {
+            return send(200, { channels: [], error: (e as Error).message });
+          }
+        }
+        case "GET /api/accounts/setmore":
+          return send(200, o.messaging.status());
+        case "POST /api/accounts/setmore/login":
+          try {
+            return send(200, { url: await o.messaging.loginUrl() });
+          } catch (e) {
+            return send(400, { error: (e as Error).message });
+          }
+        case "POST /api/accounts/setmore/logout":
+          await o.messaging.logout();
           return send(200, {});
         case "POST /api/check-prs-now":
           o.checkPrsNow();
