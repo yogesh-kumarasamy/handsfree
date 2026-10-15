@@ -69,7 +69,16 @@ export async function ensureWorktree(project: ProjectConfig, t: Ticket): Promise
   }
   await tryGit(repo, ["worktree", "prune"]);
   fs.mkdirSync(path.dirname(t.worktree), { recursive: true });
-  await git(repo, ["worktree", "add", "-B", t.branch, t.worktree, pushed ? remoteBranch : baseRef]);
+  // Something else (a person's git, an editor) may hold .git/config.lock for a moment; one short retry covers it.
+  const add = () => git(repo, ["worktree", "add", "-B", t.branch, t.worktree, pushed ? remoteBranch : baseRef]);
+  await add().catch(async (e: Error) => {
+    if (!/could not lock config file/.test(e.message)) throw e;
+    await new Promise((r) => setTimeout(r, 500));
+    // The failed add may have left a half-made worktree behind; clear it so the retry starts clean.
+    await tryGit(repo, ["worktree", "remove", "--force", t.worktree]);
+    await tryGit(repo, ["worktree", "prune"]);
+    await add();
+  });
   t.baseRef = baseRef;
   return pushed
     ? `recreated worktree from ${remoteBranch}`

@@ -384,7 +384,9 @@ export const AGENT_PRESETS: Omit<AgentConfig, "id">[] = [
 ];
 
 export const DEFAULT_JIRA_SEARCH =
-  'acli jira workitem search --jql {jql} --fields "key,summary,description" --limit 50 --json';
+  'acli jira workitem search --jql {jql} --fields "key,summary,description,issuetype" --limit 50 --json';
+/** The pre-issuetype default, upgraded on load so {type} in naming templates works for existing projects. */
+export const LEGACY_JIRA_SEARCH = 'acli jira workitem search --jql {jql} --fields "key,summary,description" --limit 50 --json';
 export const DEFAULT_JIRA_COMMENT = "acli jira workitem comment create --key {issue_key} --body {body}";
 
 // ---------- Routines: scheduled agent runs per project that report to the collab channel ----------

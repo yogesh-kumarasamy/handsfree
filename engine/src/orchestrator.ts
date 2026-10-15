@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { changedFiles, commitAll, commitsAhead, ensureWorktree, hasUncommitted, headSha, push, removeWorktree, rewordCommits, syncWithRemote, worktreePath } from "./git";
 import { checkName, commitRule, conformSubject, DEFAULT_NAMING, renderName, type NameVars } from "./naming";
+import { keyedLock } from "./lock";
 import { createStreamFormatter } from "./streamfmt";
 import { failedCheckLogs, fetchPr, openPr, publishPr } from "./github";
 import { ClientStore, TokenStore } from "./messaging/oauth";
@@ -38,6 +39,8 @@ export class Orchestrator {
   state: EngineState = loadState(this.config);
   private listeners = new Set<(e: EngineEvent) => void>();
   private running = new Map<string, Running | null>();
+  /** git writes `.git/config` on worktree add/remove and allows one writer; tickets of one repo take turns. */
+  private repoLock = keyedLock();
   private stopRequested = new Set<string>();
   private takeoverRequested = new Set<string>();
   private pollTimer?: NodeJS.Timeout;
@@ -286,7 +289,7 @@ export class Orchestrator {
 
     if (status === "merged") return this.onMerged(p, t);
     if (status === "done") {
-      await removeWorktree(p, t).catch((e) => this.log(t.key, `\n! PR closed but worktree removal failed: ${(e as Error).message}\n`));
+      await this.repoLock(p.repoPath, () => removeWorktree(p, t)).catch((e) => this.log(t.key, `\n! PR closed but worktree removal failed: ${(e as Error).message}\n`));
       this.log(t.key, "\n✓ PR closed without merge — worktree removed\n");
       return this.touch(t, { status: "done", fix: undefined });
     }
@@ -308,7 +311,7 @@ export class Orchestrator {
 
   private async onMerged(p: ProjectConfig, t: Ticket) {
     try {
-      await removeWorktree(p, t);
+      await this.repoLock(p.repoPath, () => removeWorktree(p, t));
       this.log(t.key, "\n✓ PR merged — worktree removed\n");
     } catch (e) {
       this.log(t.key, `\n! PR merged but worktree removal failed: ${(e as Error).message}\n`);
@@ -433,7 +436,7 @@ export class Orchestrator {
 
     try {
       this.log(t.key, `\nworktree  ${t.worktree}\nbranch    ${t.branch}\n`);
-      this.log(t.key, `${await ensureWorktree(p, t)}\n`);
+      this.log(t.key, `${await this.repoLock(p.repoPath, () => ensureWorktree(p, t))}\n`);
       t.baseRef ||= `${p.remote}/${p.baseBranch}`;
     } catch (e) {
       return this.fail(t, `Couldn't create the worktree: ${(e as Error).message}`);
@@ -719,7 +722,7 @@ export class Orchestrator {
     const t = this.state.tickets[key];
     const p = t && this.project(t.projectId);
     if (!t || this.running.has(key)) return;
-    if (p) await removeWorktree(p, t).catch((e) => this.log(key, `! cleanup: ${(e as Error).message}\n`));
+    if (p) await this.repoLock(p.repoPath, () => removeWorktree(p, t)).catch((e) => this.log(key, `! cleanup: ${(e as Error).message}\n`));
     this.log(key, "\n🧹 Worktree removed\n");
     this.touch(t, PR_STATUSES.includes(t.status) ? {} : { status: "done" });
   }
