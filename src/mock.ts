@@ -3,6 +3,7 @@ import {
   AGENT_PRESETS,
   DEFAULT_AGENT_MESSAGE_COMMAND,
   DEFAULT_SETMORE_ACCOUNT,
+  DEFAULT_LINEAR_ACCOUNT,
   DEFAULT_TEMPLATES,
   PR_STATUSES,
   ROUTINE_PRESETS,
@@ -29,7 +30,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
     settings: {
       pollIntervalMin: 15,
       prPollIntervalMin: 3,
-      accounts: { setmore: { ...DEFAULT_SETMORE_ACCOUNT, clientId: "hf-demo" } },
+      accounts: { setmore: { ...DEFAULT_SETMORE_ACCOUNT, clientId: "hf-demo" }, linear: { ...DEFAULT_LINEAR_ACCOUNT } },
       maxParallel: 3,
       agentTimeoutMin: 90,
       slowAfterMin: 30,
@@ -48,9 +49,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
               repoPath: "/Users/yogesh/code/chatsupport-web",
               baseBranch: "main",
               remote: "origin",
-              jql: 'project = CSW AND assignee = currentUser() AND status = "To Do" ORDER BY priority DESC',
-              jiraSearchCommand: DEFAULT_JIRA_SEARCH,
-              jiraCommentCommand: DEFAULT_JIRA_COMMENT,
+              tracker: { kind: "jira", query: 'project = CSW AND assignee = currentUser() AND status = "To Do" ORDER BY priority DESC', searchCommand: DEFAULT_JIRA_SEARCH, commentCommand: DEFAULT_JIRA_COMMENT, transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo" },
               mcpJson: JSON.stringify(
                 {
                   mcpServers: {
@@ -77,9 +76,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
               repoPath: "/Users/yogesh/code/setmore-api",
               baseBranch: "develop",
               remote: "origin",
-              jql: "project = SET AND assignee = currentUser() AND labels = handsfree",
-              jiraSearchCommand: DEFAULT_JIRA_SEARCH,
-              jiraCommentCommand: DEFAULT_JIRA_COMMENT,
+              tracker: { kind: "jira", query: "project = SET AND assignee = currentUser() AND labels = handsfree", searchCommand: DEFAULT_JIRA_SEARCH, commentCommand: DEFAULT_JIRA_COMMENT, transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo" },
               mcpJson: '{\n  "mcpServers": {}\n}',
               agents: agents(["Grok", "Claude Code"]),
               promptExtra: "",
@@ -122,7 +119,7 @@ const pr = (number: number, repo: string, over: Partial<PrInfo> = {}): PrInfo =>
 });
 
 function demoState(scenario: DemoOptions["scenario"]): EngineState {
-  if (scenario === "empty") return { tickets: {}, pollErrors: {}, prCheckErrors: {}, accounts: { setmore: { loggedIn: false } }, routines: {} };
+  if (scenario === "empty") return { tickets: {}, pollErrors: {}, prCheckErrors: {}, accounts: { setmore: { loggedIn: false }, linear: { loggedIn: false } }, routines: {} };
   const list: Ticket[] = [
     t({
       key: "CSW-1421",
@@ -246,7 +243,7 @@ function demoState(scenario: DemoOptions["scenario"]): EngineState {
     nextPollAt: new Date(Date.now() + 9 * 60_000).toISOString(),
     pollErrors: {},
     prCheckErrors: {},
-    accounts: { setmore: { loggedIn: true, user: "yogesh@anywhere.co" } },
+    accounts: { setmore: { loggedIn: true, user: "yogesh@anywhere.co" }, linear: { loggedIn: true, user: "yogesh@anywhere.co" } },
     routines: {
       r1: {
         nextRunAt: tomorrowAt(10),
@@ -344,14 +341,26 @@ export function createMockApi(opts: DemoOptions): Api {
     setmoreStatus: async () => state.accounts.setmore,
     setmoreLogin: async () => {
       setTimeout(() => {
-        state = { ...state, accounts: { setmore: { loggedIn: true, user: "yogesh@anywhere.co" } } };
+        state = { ...state, accounts: { ...state.accounts, setmore: { loggedIn: true, user: "yogesh@anywhere.co" } } };
         emit({ type: "account", name: "setmore", status: state.accounts.setmore });
       }, 1000);
       return { url: "https://auth.setmore.com/o/oauth2/auth?demo=1" };
     },
     setmoreLogout: async () => {
-      state = { ...state, accounts: { setmore: { loggedIn: false } } };
+      state = { ...state, accounts: { ...state.accounts, setmore: { loggedIn: false } } };
       emit({ type: "account", name: "setmore", status: state.accounts.setmore });
+    },
+    linearStatus: async () => state.accounts.linear,
+    linearLogin: async () => {
+      setTimeout(() => {
+        state = { ...state, accounts: { ...state.accounts, linear: { loggedIn: true, user: "yogesh@anywhere.co" } } };
+        emit({ type: "account", name: "linear", status: state.accounts.linear });
+      }, 1000);
+      return { url: "https://mcp.linear.app/authorize?demo=1" };
+    },
+    linearLogout: async () => {
+      state = { ...state, accounts: { ...state.accounts, linear: { loggedIn: false } } };
+      emit({ type: "account", name: "linear", status: state.accounts.linear });
     },
     publish: async (k) => {
       const t = state.tickets[k];
@@ -386,7 +395,7 @@ export function createMockApi(opts: DemoOptions): Api {
         emit({ type: "state", state });
       }
     },
-    testJira: async () => ({
+    testTracker: async () => ({
       issues: [
         { key: "CSW-1425", summary: "Persist agent's last-used canned response" },
         { key: "CSW-1431", summary: "Show 'agent is away' banner after 5 min idle" },

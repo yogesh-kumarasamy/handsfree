@@ -1,8 +1,9 @@
 // Direct Setmore adapter: the user's own OAuth login + the Setmore MCP server. No agent in the loop.
 import type { AccountStatus, SetmoreAccountSettings } from "../types";
 import type { MessagingAdapter } from "./adapter";
-import { AuthError, McpClient, McpError, toolJson, toolText } from "./mcpclient";
-import { discover, OAuthError, refreshTokens, tokensFromResponse, type AuthMeta, type TokenStore } from "./oauth";
+import { McpClient, McpError, toolJson, toolText } from "./mcpclient";
+import type { TokenStore } from "./oauth";
+import { TokenKeeper } from "./tokens";
 
 /** Depth-first search for the first of `keys` in a JSON value. */
 export function findKey(v: unknown, keys: string[]): string | undefined {
@@ -27,74 +28,26 @@ export function findFlag(v: unknown, key: string): boolean {
 export class SetmoreAdapter implements MessagingAdapter {
   readonly platform = "setmore" as const;
   private client: McpClient;
-  private refreshing?: Promise<void>;
-  private metaPromise?: Promise<AuthMeta>;
+  private keeper: TokenKeeper;
 
   constructor(
-    private settings: SetmoreAccountSettings,
-    private tokens: TokenStore,
-    private onStatus: (s: AccountStatus) => void,
-    private fetchImpl: typeof fetch = fetch,
+    settings: SetmoreAccountSettings,
+    tokens: TokenStore,
+    onStatus: (s: AccountStatus) => void,
+    fetchImpl: typeof fetch = fetch,
   ) {
-    this.client = new McpClient(settings.mcpUrl, () => this.getToken(), { onUnauthorized: () => this.refresh(), fetchImpl });
+    // Setmore is a public client registered by the auth team: no secret.
+    this.keeper = new TokenKeeper({ label: "Setmore", issuer: settings.issuer, mcpUrl: settings.mcpUrl, client: () => ({ clientId: settings.clientId }) }, tokens, onStatus, fetchImpl);
+    this.client = new McpClient(settings.mcpUrl, () => this.keeper.getToken(), { onUnauthorized: () => this.keeper.refresh(), fetchImpl });
   }
 
   status(error?: string): AccountStatus {
-    const t = this.tokens.load();
-    if (!t) return { loggedIn: false, error };
-    return { loggedIn: true, user: t.idClaims?.email || t.idClaims?.name, scope: t.scope, expiresAt: t.expiresAt, error };
-  }
-
-  private meta() {
-    this.metaPromise ||= discover(this.settings.issuer, this.fetchImpl).catch((e) => {
-      this.metaPromise = undefined;
-      throw e;
-    });
-    return this.metaPromise;
-  }
-
-  private async getToken() {
-    const t = this.tokens.load();
-    if (!t) throw new AuthError("Not logged in to Setmore. Settings → Accounts → Log in.");
-    if (Date.parse(t.expiresAt) - 60_000 < Date.now()) await this.refresh();
-    const fresh = this.tokens.load();
-    if (!fresh) throw new AuthError("Setmore session expired — log in again.");
-    return fresh.accessToken;
+    return this.keeper.status(error);
   }
 
   /** One refresh at a time; concurrent callers share it. */
   refresh(): Promise<void> {
-    this.refreshing ||= this.doRefresh().finally(() => (this.refreshing = undefined));
-    return this.refreshing;
-  }
-
-  private async doRefresh() {
-    const t = this.tokens.load();
-    if (!t?.refreshToken) {
-      this.tokens.clear();
-      this.onStatus(this.status("Setmore session expired — log in again."));
-      throw new AuthError("Setmore session expired — log in again.");
-    }
-    try {
-      const r = await refreshTokens(await this.meta(), { clientId: this.settings.clientId, refreshToken: t.refreshToken, resource: this.settings.mcpUrl }, this.fetchImpl);
-      this.tokens.save(tokensFromResponse(r, Date.now(), t));
-      this.onStatus(this.status());
-    } catch (e) {
-      if (e instanceof OAuthError && e.code === "invalid_grant") {
-        // Another refresh (a re-login, or an adapter rebuilt by settingsChanged) may have rotated the token
-        // meanwhile: then ours was simply consumed, and the newer tokens on disk are the good ones.
-        const current = this.tokens.load();
-        if (current && current.refreshToken !== t.refreshToken) {
-          this.onStatus(this.status());
-          return;
-        }
-        this.tokens.clear();
-        this.onStatus(this.status("Setmore session expired — log in again."));
-        throw new AuthError("Setmore session expired — log in again.");
-      }
-      this.onStatus(this.status(`Token refresh failed: ${(e as Error).message}`));
-      throw e;
-    }
+    return this.keeper.refresh();
   }
 
   async listChannels(query?: string) {

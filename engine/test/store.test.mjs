@@ -54,3 +54,27 @@ test("normalizeProject gives routines: [] and normalizeRoutine fills defaults an
   assert.equal(normalizeRoutine({ schedule: "bad" }).schedule, "bad", "invalid cron kept as text");
   assert.equal(normalizeProject({ routines: [{ name: "Y" }] }).routines[0].name, "Y");
 });
+
+test("normalizeProject: legacy Jira fields migrate into tracker", () => {
+  const p = normalizeProject({ id: "p", name: "P", jql: "project = X", jiraSearchCommand: "acli custom {jql}", jiraCommentCommand: "-" });
+  assert.deepEqual(p.tracker, { kind: "jira", query: "project = X", searchCommand: "acli custom {jql}", commentCommand: "-", transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo" });
+  assert.equal("jql" in p, false);
+});
+
+test("normalizeProject: a legacy empty Jira comment command keeps meaning 'never comment'", () => {
+  assert.equal(normalizeProject({ jql: "x", jiraCommentCommand: "" }).tracker.commentCommand, "-");
+  assert.equal(normalizeProject({ jql: "x" }).tracker.commentCommand, "-");
+  assert.equal(normalizeProject({ jql: "x", jiraCommentCommand: "acli c {issue_key} {body}" }).tracker.commentCommand, "acli c {issue_key} {body}");
+});
+
+test("normalizeProject: tracker defaults per kind; unknown kind falls back to jira", () => {
+  assert.equal(normalizeProject({ tracker: { kind: "github", query: "label:hf" } }).tracker.doneStatus, "closed");
+  assert.equal(normalizeProject({ tracker: { kind: "linear" } }).tracker.doneStatus, "Done");
+  assert.equal(normalizeProject({ tracker: { kind: "linear" } }).tracker.linearState, "Todo");
+  assert.equal(normalizeProject({ tracker: { kind: "linear", linearState: "" } }).tracker.linearState, "", "an explicitly empty status stays empty");
+  assert.equal(normalizeProject({ tracker: { kind: "nope" } }).tracker.kind, "jira");
+});
+
+test("migrateState: accounts.linear defaults to logged out", () => {
+  assert.deepEqual(migrateState({ tickets: {} }, { version: 1, settings: {}, projects: [] }).accounts.linear, { loggedIn: false });
+});

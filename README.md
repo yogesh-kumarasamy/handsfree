@@ -1,15 +1,15 @@
 # HandsFree
 
-A Mac app that picks up your Jira tickets, works each one in its own git worktree with a chain of AI agents, and opens a draft PR. Nothing to watch until the PR exists.
+A Mac app that picks up your tickets (Jira, GitHub Issues or Linear), works each one in its own git worktree with a chain of AI agents, and opens a draft PR. Nothing to watch until the PR exists.
 
 ```
-Jira (acli, your JQL) ─▶ .worktrees/<KEY> ─▶ Agent 1 ──fails / rate-limited──▶ Agent 2 … ─▶ commit
-                                                                     ─▶ git push ─▶ gh pr create --draft ─▶ Jira comment with PR link
+Tracker query (Jira/acli · GitHub/gh · Linear/MCP) ─▶ .worktrees/<KEY> ─▶ Agent 1 ──fails / rate-limited──▶ Agent 2 … ─▶ commit
+                                                                     ─▶ git push ─▶ gh pr create --draft ─▶ ticket comment with PR link
 PR open ─▶ checked every few minutes: draft/ready, CI, reviews
    CI fails   ─▶ failing logs ─▶ agent chain again in the same worktree ─▶ push (up to N rounds)
    CI passes  ─▶ "ready for review" notification (once, published PRs only)
    approved   ─▶ "waiting to be merged" nudge after N minutes
-   merged     ─▶ worktree removed ─▶ Jira comment with the PR link
+   merged     ─▶ worktree removed ─▶ ticket moved to done (Jira "Done" · GitHub closed · Linear "Done") ─▶ comment with the PR link
    CI passes / approved too long ─▶ collab message to the project's channel (Setmore, once each)
 ```
 
@@ -18,7 +18,7 @@ PR open ─▶ checked every few minutes: draft/ready, CI, reviews
 | Path | What it is |
 |---|---|
 | `src-tauri/` | Mac shell (Tauri 2, Rust): window, menu bar icon, launch at login, notifications, starts the engine |
-| `engine/src/` | The engine (Node/TypeScript): polling, worktrees, agent chain + fallback, PRs, Jira comment, local API |
+| `engine/src/` | The engine (Node/TypeScript): polling, worktrees, agent chain + fallback, PRs, tracker adapters (`engine/src/trackers/`), local API |
 | `src/` | The UI (React): Dashboard, Projects, Settings |
 | `engine/test/e2e.mjs` | End-to-end test with fake `acli`, `gh` and agents |
 
@@ -29,10 +29,11 @@ xcode-select --install                                   # if you haven't alread
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # Rust, for building the app
 node -v                                                  # Node 20+ (the engine runs on it)
 gh auth login                                            # PRs
-acli jira auth login                                     # Jira search + comments
+acli jira auth login                                     # only for Jira projects: search, comments, done transition
 claude --version; grok --version                         # your agents, logged in
 # Setmore collab messages need an OAuth client id for HandsFree (public client, PKCE,
 # redirect http://127.0.0.1:47831/oauth/callback) — ask the auth team, paste it in Settings → Accounts.
+# Linear projects: Settings → Accounts → Linear → Log in (HandsFree registers itself with Linear; no client id).
 ```
 
 ## Run it
@@ -51,14 +52,18 @@ Other commands: `npm run test:engine` (engine e2e test), `npm run engine` (engin
 ## Using it
 
 1. **Projects → New project.** Pick the repo, base branch, draft or ready PRs.
-2. **Jira.** Write the JQL and press **Test JQL**. Each ticket is picked up once; *Forget* on the dashboard lets it be picked up again.
+2. **Tracker.** Pick where tickets come from and press **Test query**. Each ticket is picked up once; *Forget* on the dashboard lets it be picked up again.
+   - **Jira** (default): a JQL, run through `acli` with the login on your Mac. Keys look like `ABC-123`.
+   - **GitHub Issues**: a `gh issue list --search` filter, e.g. `assignee:@me label:handsfree`, on the repo you set (empty = the project's remote, if it's on github.com). Keys look like `<repo-name>#12`; two projects on repos with the same name would share keys, so keep their filters apart.
+   - **Linear**: an optional text filter plus an assignee (`me` by default), through Linear's MCP server (`https://mcp.linear.app/mcp`). Log in once in Settings → Accounts → Linear. Keys are Linear's identifiers (`ENG-123`).
+   - **Status on merge**: when the PR merges, the ticket is moved there (Jira default "Done"; GitHub: any value closes the issue as completed; Linear default "Done"). Leave it empty to never move tickets. A failed move is logged and notified; the merge is still handled.
 3. **MCP servers.** Paste the project's `mcp.json`. It's written to `.handsfree/mcp.json` in every worktree and passed to agents as `{mcp_file}`.
 4. **Agent chain.** Up to 4, top to bottom. The next agent takes over in the same worktree when one exits non-zero, matches a token-exhaustion pattern in its last output, times out, or finishes without changes.
-5. **Save & activate.** It starts on the next check (Settings → *Check Jira every*), or press **Check Jira now**.
-6. **After the PR.** The dashboard groups tickets into *In progress*, *Pull requests*, *Approved, not merged* and *Merged*. **Publish** marks a draft ready (`gh pr ready`); publishing in the GitHub UI is picked up on the next check (Settings → *Check PRs every*, default 3 min). When CI fails, HandsFree fetches the failing step logs (`gh run view --log-failed`) and runs the agent chain again in the same worktree, up to the project's *Max automatic fix rounds*; **Fix CI** starts a round by hand. Approved PRs that wait longer than the project's limit raise a nudge. Merged PRs get their worktree removed and a comment on the ticket.
+5. **Save & activate.** It starts on the next check (Settings → *Check tickets every*), or press **Check tickets now**.
+6. **After the PR.** The dashboard groups tickets into *In progress*, *Pull requests*, *Approved, not merged* and *Merged*. **Publish** marks a draft ready (`gh pr ready`); publishing in the GitHub UI is picked up on the next check (Settings → *Check PRs every*, default 3 min). When CI fails, HandsFree fetches the failing step logs (`gh run view --log-failed`) and runs the agent chain again in the same worktree, up to the project's *Max automatic fix rounds*; **Fix CI** starts a round by hand. Approved PRs that wait longer than the project's limit raise a nudge. Merged PRs get their worktree removed, the ticket moved to the project's done status, and a comment on the ticket.
 7. **Messaging.** Settings → *Accounts*: paste the Setmore `client_id` from the auth team and press **Log in** (browser sign-in; tokens stay on this Mac). In each project's *Messaging* step pick the platform (Setmore collab, or an agent run with your own MCP connectors), load and pick the channel, and edit the four templates. HandsFree then posts "please review" when CI passes on a published PR and "waiting to be merged" when an approved PR sits past the project's delay — once each. **Send to collab** on a PR (or a selection of PRs) sends the prefilled, editable text; every send is listed in the ticket detail.
 
-Agents are told to commit but not push. HandsFree commits anything left uncommitted, pushes `handsfree/<KEY>`, opens the PR with `gh`, and comments the link on the ticket. Jira status is never changed.
+Agents are told to commit but not push. HandsFree commits anything left uncommitted, pushes `handsfree/<KEY>`, opens the PR with `gh`, and comments the link on the ticket. The only status change HandsFree makes is the move to the done status on merge.
 
 ### Routines
 
@@ -81,7 +86,7 @@ Every ticket has one **Open** button:
 
 - **Running → 👀 Open live.** Terminal shows the agent's live output. Close the window to stop watching; the agent keeps going. Press **Enter** to take over: HandsFree stops the agent and continues its session right there, so you can talk to it.
 - **Failed / stopped → Take over.** Continues the last agent's session in its worktree.
-- **When you're done**, the ticket shows **With you**. Choose **Open PR with my changes** (commit, push, draft PR, Jira comment) or **Hand back to agents** (re-run the chain; agents are told you changed things).
+- **When you're done**, the ticket shows **With you**. Choose **Open PR with my changes** (commit, push, draft PR, ticket comment) or **Hand back to agents** (re-run the chain; agents are told you changed things).
 
 Long runs get a **⏱ slow** flag and a notification after *Settings → Flag as slow after* (default 30 min).
 
@@ -98,7 +103,9 @@ HandsFree shell-quotes these, so don't wrap them in quotes:
 | `{mcp_file}` | Path to `.handsfree/mcp.json` |
 | `{issue_key}` `{worktree}` `{branch}` | Ticket key, worktree path, branch |
 | `{jql}` | Jira search command only |
-| `{issue_key}` `{body}` | Jira comment command only |
+| `{repo}` `{query}` | GitHub search command only |
+| `{issue_key}` `{number}` `{repo}` `{body}` | Tracker comment command (`-` = never comment) |
+| `{issue_key}` `{number}` `{repo}` `{status}` | Jira transition / GitHub close command |
 
 Agents also get `HANDSFREE=1`, `HANDSFREE_ISSUE=<KEY>` and `CI=1` in their environment.
 
@@ -106,7 +113,7 @@ Agents also get `HANDSFREE=1`, `HANDSFREE_ISSUE=<KEY>` and `CI=1` in their envir
 
 - **Grok** preset is `grok --prompt {prompt}`. Confirm your Grok CLI's headless flag.
 - **Antigravity** ships without a command. Add its headless command to enable it. If it only reads MCP config from a fixed path, use e.g. `cp {mcp_file} <its path> && <command>`.
-- **acli** flags (`--fields`, `--limit`, `--json`) vary by version. **Test JQL** shows the exact error if they don't match; edit under *Advanced: CLI commands*.
+- **acli** flags (`--fields`, `--limit`, `--json`) vary by version. **Test query** shows the exact error if they don't match; edit under *Advanced: CLI commands*.
 - Claude's preset uses `--dangerously-skip-permissions` so it can run unattended. That's the point of the app, but it means the agent can run any command in the worktree.
 
 ## Where things live

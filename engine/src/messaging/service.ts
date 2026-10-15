@@ -1,9 +1,9 @@
 // Sends collab messages for PR events and on demand; owns the Setmore login (loopback OAuth) and records every send.
-import http from "node:http";
 import type { AccountStatus, Config, EngineEvent, EngineState, MessageKind, MessageRecord, PrEvent, ProjectConfig, Ticket } from "../types";
 import type { MessagingAdapter } from "./adapter";
 import { adapterFor as realAdapterFor, type AdapterDeps } from "./index";
-import { buildAuthorizeUrl, discover, exchangeCode, pkce, randomState, revokeToken, tokensFromResponse, type AuthMeta, type TokenStore } from "./oauth";
+import { LoopbackLogin } from "../oauthlogin";
+import type { TokenStore } from "./oauth";
 import { SetmoreAdapter } from "./setmore";
 import { bulkList, fillTemplate, ticketVars } from "./templates";
 
@@ -21,14 +21,29 @@ export interface ServiceDeps {
 }
 
 const now = () => new Date().toISOString();
-const LOGIN_TIMEOUT_MS = 5 * 60_000;
 
 export class MessagingService {
   private adapterDeps: AdapterDeps;
-  private pending?: { url: string; server: http.Server; state: string; verifier: string; redirectUri: string; timer: NodeJS.Timeout; exchanging?: boolean };
+  private login: LoopbackLogin;
 
   constructor(public deps: ServiceDeps) {
     this.adapterDeps = { tokens: deps.tokens, fetchImpl: deps.fetchImpl, onStatus: (s) => this.setStatus(s) };
+    const cfg = () => this.deps.config().settings.accounts.setmore;
+    this.login = new LoopbackLogin({
+      name: "setmore",
+      issuer: () => cfg().issuer,
+      resource: () => cfg().mcpUrl,
+      scopes: () => cfg().scopes,
+      redirectPort: () => cfg().redirectPort,
+      clientId: async () => {
+        if (!cfg().clientId.trim()) throw new Error("Enter the Setmore client id first (from the auth team).");
+        return { clientId: cfg().clientId };
+      },
+      tokens: deps.tokens,
+      onStatus: (s) => this.setStatus(s),
+      status: (e) => this.setmore().status(e),
+      fetchImpl: deps.fetchImpl,
+    });
   }
 
   // ---------- status ----------
@@ -43,10 +58,10 @@ export class MessagingService {
     return this.adapterDeps.setmore;
   }
   status(): AccountStatus {
-    return { ...this.setmore().status(), loginPending: !!this.pending };
+    return { ...this.setmore().status(), loginPending: this.login.pending };
   }
   private setStatus(s: AccountStatus) {
-    const status = { ...s, loginPending: !!this.pending };
+    const status = { ...s, loginPending: this.login.pending };
     this.deps.state().accounts.setmore = status;
     this.deps.persist();
     this.deps.emit({ type: "account", name: "setmore", status });
@@ -199,84 +214,16 @@ export class MessagingService {
   }
 
   // ---------- Setmore login ----------
-  async loginUrl(): Promise<string> {
-    if (this.pending) return this.pending.url;
-    const s = this.deps.config().settings.accounts.setmore;
-    if (!s.clientId.trim()) throw new Error("Enter the Setmore client id first (from the auth team).");
-    const meta = await discover(s.issuer, this.deps.fetchImpl);
-    const { verifier, challenge } = pkce();
-    const state = randomState();
-    const redirectUri = `http://127.0.0.1:${s.redirectPort}/oauth/callback`;
-    const url = buildAuthorizeUrl(meta, { clientId: s.clientId, redirectUri, scope: s.scopes, state, challenge, resource: s.mcpUrl });
-    const server = http.createServer((req, res) => void this.onCallback(req, res, meta));
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(s.redirectPort, "127.0.0.1", () => resolve());
-    }).catch((e: NodeJS.ErrnoException) => {
-      throw new Error(e.code === "EADDRINUSE" ? `Port ${s.redirectPort} is in use — close the app using it, or register another redirect port.` : e.message);
-    });
-    const timer = setTimeout(() => this.finishLogin("Login timed out after 5 minutes."), LOGIN_TIMEOUT_MS);
-    this.pending = { url, server, state, verifier, redirectUri, timer };
-    this.setStatus(this.setmore().status());
-    return url;
-  }
-
-  private async onCallback(req: http.IncomingMessage, res: http.ServerResponse, meta: AuthMeta) {
-    const page = (code: number, title: string, body: string) => {
-      res.writeHead(code, { "content-type": "text/html; charset=utf-8" });
-      res.end(`<!doctype html><meta charset="utf-8"><title>${title}</title><body style="font-family:-apple-system,sans-serif;padding:40px"><h2>${title}</h2><p>${body}</p></body>`);
-    };
-    const url = new URL(req.url || "/", "http://127.0.0.1");
-    if (url.pathname !== "/oauth/callback") return page(404, "Not found", "HandsFree is waiting for the sign-in callback.");
-    const p = this.pending;
-    if (!p) return page(400, "No sign-in in progress", "Start the login from HandsFree → Settings → Accounts.");
-    if (url.searchParams.get("state") !== p.state) return page(400, "Sign-in rejected", "The state parameter didn't match. Start the login again from HandsFree.");
-    const err = url.searchParams.get("error");
-    if (err) {
-      page(400, "Sign-in failed", `${err}: ${url.searchParams.get("error_description") || ""}`);
-      return this.finishLogin(`Sign-in failed: ${err}`);
-    }
-    const code = url.searchParams.get("code");
-    if (!code) return page(400, "Sign-in rejected", "No code in the callback.");
-    // The browser may retry or prefetch the callback: the code is one-time, so only the first request exchanges it.
-    if (p.exchanging) return page(200, "Signed in to Setmore", "This sign-in is already being completed. You can close this tab.");
-    p.exchanging = true;
-    try {
-      const s = this.deps.config().settings.accounts.setmore;
-      const r = await exchangeCode(meta, { clientId: s.clientId, code, redirectUri: p.redirectUri, verifier: p.verifier, resource: s.mcpUrl }, this.deps.fetchImpl);
-      this.deps.tokens.save(tokensFromResponse(r));
-      page(200, "Signed in to Setmore", "You can close this tab and go back to HandsFree.");
-      this.finishLogin();
-    } catch (e) {
-      page(500, "Sign-in failed", String((e as Error).message || e));
-      this.finishLogin(`Sign-in failed: ${(e as Error).message}`);
-    }
-  }
-
-  private finishLogin(error?: string) {
-    const p = this.pending;
-    if (!p) return;
-    clearTimeout(p.timer);
-    p.server.close();
-    this.pending = undefined;
-    this.setStatus(this.setmore().status(error));
+  loginUrl(): Promise<string> {
+    return this.login.loginUrl();
   }
 
   async logout() {
-    const t = this.deps.tokens.load();
-    const s = this.deps.config().settings.accounts.setmore;
-    if (t?.refreshToken) {
-      await discover(s.issuer, this.deps.fetchImpl)
-        .then((meta) => revokeToken(meta, { clientId: s.clientId, token: t.refreshToken! }, this.deps.fetchImpl))
-        .catch(() => undefined);
-    }
-    this.deps.tokens.clear();
-    this.finishLogin();
-    this.setStatus(this.setmore().status());
+    await this.login.logout();
   }
 
   shutdown() {
-    this.finishLogin();
+    this.login.shutdown();
   }
 
   /** Post free text to a project's channel without a ticket (routines). Throws on failure. */

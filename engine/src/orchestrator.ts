@@ -3,17 +3,18 @@ import path from "node:path";
 import { changedFiles, commitAll, commitsAhead, ensureWorktree, hasUncommitted, headSha, push, removeWorktree, syncWithRemote, worktreePath } from "./git";
 import { createStreamFormatter } from "./streamfmt";
 import { failedCheckLogs, fetchPr, openPr, publishPr } from "./github";
-import { commentOnIssue, searchIssues } from "./jira";
-import { TokenStore } from "./messaging/oauth";
+import { ClientStore, TokenStore } from "./messaging/oauth";
 import { MessagingService } from "./messaging/service";
 import { PrEvents } from "./prevents";
 import { RoutineService } from "./routines/service";
 import { buildFixPrompt, mergeNudgeDue, nextStatus, shouldAutoFix, toPrInfo, type RawPr } from "./prstate";
 import { exec, fill, q, SHELL, start, type Running } from "./shell";
+import { TrackerService } from "./trackers/service";
 import { DATA_DIR, loadConfig, loadState, logFile, normalizeProject, normalizeSettings, routineLogFile, saveConfig, saveState } from "./store";
 import {
   CLAUDE_RESUME,
   PR_STATUSES,
+  TRACKER_NOUN,
   type AgentConfig,
   type Attempt,
   type Config,
@@ -61,6 +62,15 @@ export class Orchestrator {
     notify: (t, b) => this.notify(t, b, "info"),
     messaging: this.messaging,
   });
+  /** Ticket trackers (Jira / GitHub Issues / Linear) and the Linear account. */
+  trackers = new TrackerService({
+    config: () => this.config,
+    state: () => this.state,
+    persist: () => this.persist(),
+    emit: (e) => this.emit(e),
+    tokens: new TokenStore(path.join(DATA_DIR, "auth", "linear.json")),
+    client: new ClientStore(path.join(DATA_DIR, "auth", "linear-client.json")),
+  });
   private prTimer?: NodeJS.Timeout;
   private checkingPrs = false;
 
@@ -79,6 +89,7 @@ export class Orchestrator {
     this.prEvents.on((e) => void this.messaging.onPrEvent(e));
     this.messaging.init();
     this.routines.start();
+    this.trackers.init();
     this.schedulePoll(3000);
     this.schedulePrCheck(5000);
   }
@@ -146,6 +157,7 @@ export class Orchestrator {
     // Account settings (client id, URLs) may have changed: the next messaging call builds a fresh adapter.
     this.messaging.settingsChanged();
     this.routines.configChanged();
+    this.trackers.settingsChanged();
     saveConfig(this.config);
     this.emit({ type: "config", config: this.config });
     if (prevInterval !== this.config.settings.pollIntervalMin || (wasPaused && !this.config.settings.paused)) this.schedulePoll(1000);
@@ -176,7 +188,8 @@ export class Orchestrator {
       if (!this.config.settings.paused) {
         for (const p of this.config.projects.filter((x) => x.enabled)) {
           try {
-            const { issues } = await searchIssues(p);
+            const tracker = this.trackers.trackerFor(p);
+            const issues = await tracker.search();
             delete this.state.pollErrors[p.id];
             for (const i of issues) {
               if (this.state.tickets[i.key]) continue; // each ticket is picked up once (until you Forget it)
@@ -185,6 +198,8 @@ export class Orchestrator {
                 projectId: p.id,
                 summary: i.summary || i.key,
                 description: i.description,
+                trackerId: i.id,
+                issueUrl: i.url,
                 status: "queued",
                 branch: `handsfree/${i.key}`,
                 worktree: worktreePath(p, i.key),
@@ -193,7 +208,7 @@ export class Orchestrator {
                 createdAt: now(),
                 updatedAt: now(),
               };
-              this.log(i.key, `── HandsFree ▸ ${i.key}: ${i.summary}\npicked up by JQL for “${p.name}” at ${now()}\n`);
+              this.log(i.key, `── HandsFree ▸ ${i.key}: ${i.summary}\npicked up by ${tracker.noun} query for “${p.name}” at ${now()}\n`);
             }
           } catch (e) {
             this.state.pollErrors[p.id] = (e as Error).message;
@@ -296,11 +311,29 @@ export class Orchestrator {
       this.log(t.key, `\n! PR merged but worktree removal failed: ${(e as Error).message}\n`);
     }
     this.touch(t, { status: "merged", fix: undefined, error: undefined });
+    const tracker = this.trackers.trackerFor(p);
+    const done = p.tracker.doneStatus.trim();
+    // Never blocks the merge handling: a failed transition is logged and notified, the ticket stays merged.
+    if (done) {
+      try {
+        const r = await tracker.transition(t, done);
+        if (!r.skipped) {
+          this.log(t.key, `✓ Moved the ${tracker.noun} to “${done}”\n`);
+          this.touch(t, { trackerDone: true });
+        } else if (r.reason) {
+          this.log(t.key, `· ${tracker.noun}: ${r.reason}; status left as is\n`);
+        }
+      } catch (e) {
+        this.log(t.key, `! Couldn't move the ${tracker.noun} to “${done}”: ${(e as Error).message}\n`);
+        this.notify(`${t.key}: couldn't move the ${tracker.noun} to ${done}`, (e as Error).message, "failed");
+      }
+    }
     try {
-      const r = await commentOnIssue(p, t.key, `Merged: ${t.prUrl}\n${t.summary} — shipped by HandsFree.`);
-      if (!r.skipped) this.log(t.key, "✓ Commented the merge on Jira\n");
+      const r = await tracker.comment(t, `Merged: ${t.prUrl}\n${t.summary} — shipped by HandsFree.`);
+      if (!r.skipped) this.log(t.key, `✓ Commented the merge on the ${tracker.noun}\n`);
+      else if (r.reason) this.log(t.key, `· ${tracker.noun}: ${r.reason}; not commented\n`);
     } catch (e) {
-      this.log(t.key, `! Jira merge comment failed: ${(e as Error).message}\n`);
+      this.log(t.key, `! ${tracker.noun} merge comment failed: ${(e as Error).message}\n`);
     }
     this.prEvents.emit({ kind: "merged", key: t.key, prUrl: t.prUrl!, projectId: p.id, at: now() });
   }
@@ -455,7 +488,7 @@ export class Orchestrator {
       if (!winner) return this.fail(t, "Every agent in the chain failed. Check the log, then Retry.");
     }
 
-    // ---- push, PR, Jira ----
+    // ---- push, PR, tracker comment ----
     try {
       this.touch(t, { currentAgent: undefined, slow: undefined });
       this.log(t.key, `\n⇡ Pushing ${t.branch}\n`);
@@ -483,21 +516,24 @@ export class Orchestrator {
       return this.fail(t, `Agents finished, but opening the PR failed: ${(e as Error).message}. Retry will only redo this step.`);
     }
     if (!t.jiraCommented) {
+      const tracker = this.trackers.trackerFor(p);
       try {
-        const r = await commentOnIssue(p, t.key, `HandsFree opened a ${p.draftPr ? "draft " : ""}PR for this ticket: ${t.prUrl}`);
+        const r = await tracker.comment(t, `HandsFree opened a ${p.draftPr ? "draft " : ""}PR for this ${tracker.noun}: ${t.prUrl}`);
         if (!r.skipped) {
-          this.log(t.key, "✓ Commented the PR link on Jira\n");
+          this.log(t.key, `✓ Commented the PR link on the ${tracker.noun}\n`);
           this.touch(t, { jiraCommented: true });
+        } else if (r.reason) {
+          this.log(t.key, `· ${tracker.noun}: ${r.reason}; not commented\n`);
         }
       } catch (e) {
-        this.log(t.key, `! Jira comment failed: ${(e as Error).message}\n`);
+        this.log(t.key, `! ${tracker.noun} comment failed: ${(e as Error).message}\n`);
       }
     }
   }
 
   private async runAgent(p: ProjectConfig, t: Ticket, agent: AgentConfig, attempt: Attempt, i: number, total: number, mcpFile: string, startSha: string) {
     const promptFile = path.join(t.worktree, ".handsfree", "prompt.md");
-    const prompt = t.fix ? buildFixPrompt(p, t, t.fix) : buildPrompt(p, t, i > 0 || t.attempts.length > 1);
+    const prompt = t.fix ? buildFixPrompt(p, t, t.fix) : buildPrompt(p, t, i > 0 || t.attempts.length > 1, this.trackers.noun(p));
     fs.writeFileSync(promptFile, prompt);
     const cmd = fill(agent.command, {
       prompt,
@@ -783,7 +819,7 @@ export class Orchestrator {
 
   /**
    * Give a taken-over ticket back to HandsFree.
-   * - "pr": commit what's there and go straight to push → draft PR → Jira comment.
+   * - "pr": commit what's there and go straight to push → draft PR → tracker comment.
    * - "agents": run the agent chain again; the prompt tells agents a person changed things.
    */
   async handBack(key: string, mode: "pr" | "agents") {
@@ -817,6 +853,7 @@ export class Orchestrator {
   shutdown() {
     this.messaging.shutdown();
     this.routines.shutdown();
+    this.trackers.shutdown();
     clearTimeout(this.prTimer);
     for (const r of this.running.values()) r?.kill();
   }
@@ -841,14 +878,14 @@ function describe(o: string) {
           : "failed";
 }
 
-export function buildPrompt(p: ProjectConfig, t: Ticket, continuing: boolean) {
+export function buildPrompt(p: ProjectConfig, t: Ticket, continuing: boolean, noun = TRACKER_NOUN[p.tracker.kind]) {
   const prev = t.attempts.filter((a) => a.endedAt);
   return [
-    `You are working unattended on Jira ticket ${t.key}: ${t.summary}`,
+    `You are working unattended on ${noun} ${t.key}: ${t.summary}`,
     "",
     "## Ticket",
     t.description?.trim() ||
-      "(No description was fetched. If you have a Jira MCP server or the `acli` CLI, read the full ticket before starting.)",
+      `(No description was fetched. Read the full ${noun} with the tracker's CLI or MCP server before starting.)`,
     "",
     "## How to work",
     `- You are in a git worktree on branch \`${t.branch}\`, based on \`${t.baseRef || p.baseBranch}\`. Only change files here.`,

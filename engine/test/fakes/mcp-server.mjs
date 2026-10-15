@@ -1,7 +1,8 @@
-// A fake Setmore-like MCP server over streamable HTTP: bearer auth, sessions, list_channels, two-call send_message.
+// A fake MCP server over streamable HTTP: bearer auth, sessions. Default tools are Setmore-like (list_channels,
+// two-call send_message); `tools: { name: { inputSchema, handler(args) → result } }` replaces them (e.g. a fake Linear).
 import http from "node:http";
 
-export async function startFakeMcp({ validTokens = new Set(), sse = false } = {}) {
+export async function startFakeMcp({ validTokens = new Set(), sse = false, tools } = {}) {
   const received = [];
   const calls = [];
   const sessions = new Set();
@@ -47,6 +48,12 @@ export async function startFakeMcp({ validTokens = new Set(), sse = false } = {}
     if (rpc.method === "notifications/initialized") {
       res.writeHead(202);
       return res.end();
+    }
+    if (tools && rpc.method === "tools/list") return ok({ tools: Object.entries(tools).map(([name, t]) => ({ name, inputSchema: t.inputSchema })) });
+    if (tools && rpc.method === "tools/call") {
+      const { name, arguments: a = {} } = rpc.params;
+      if (!tools[name]) return ok({ isError: true, content: [{ type: "text", text: `unknown tool ${name}` }] });
+      return ok(await tools[name].handler(a));
     }
     if (rpc.method !== "tools/call") return err(-32601, "method not found");
     const { name, arguments: a = {} } = rpc.params;

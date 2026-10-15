@@ -56,6 +56,13 @@ export class McpClient {
     return result;
   }
 
+  /** The server's tools with their input schemas (first page; enough for the servers HandsFree talks to). */
+  async listTools(): Promise<{ name: string; inputSchema?: { properties?: Record<string, unknown> } }[]> {
+    await this.initialize();
+    const result = (await this.rpc("tools/list", {})) as { tools?: { name: string; inputSchema?: { properties?: Record<string, unknown> } }[] } | undefined;
+    return result?.tools || [];
+  }
+
   private async rpc(method: string, params: unknown, o: { notify?: boolean; retryAuth?: boolean; retrySession?: boolean } = {}): Promise<unknown> {
     const { notify = false, retryAuth = true, retrySession = true } = o;
     const id = notify ? undefined : this.nextId++;
