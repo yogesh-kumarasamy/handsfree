@@ -1,10 +1,13 @@
-// A fake OAuth 2.1 server: OIDC discovery, authorize (redirects straight back with a code), token (PKCE checked).
+// A fake OAuth 2.1 server: OIDC discovery, dynamic client registration, authorize (redirects straight back with a code),
+// token (PKCE checked). With `requireRegistered`, authorize/token only accept registered clients and redirect URIs.
 import http from "node:http";
 import crypto from "node:crypto";
 
 const b64url = (b) => Buffer.from(b).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
-export async function startFakeAuth({ validTokens = new Set() } = {}) {
+export async function startFakeAuth({ validTokens = new Set(), requireRegistered = false } = {}) {
+  const registrations = [];
+  const clients = new Map(); // client_id → redirect_uris
   const codes = new Map(); // code → { challenge, redirectUri, resource }
   const refreshTokens = new Set();
   let n = 0;
@@ -28,11 +31,24 @@ export async function startFakeAuth({ validTokens = new Set() } = {}) {
       res.end(JSON.stringify(body));
     };
     if (url.pathname === "/o/.well-known/openid-configuration") {
-      return json(200, { issuer: base + "/o", authorization_endpoint: `${base}/o/oauth2/auth`, token_endpoint: `${base}/o/oauth2/v2/token`, revocation_endpoint: `${base}/o/oauth2/revoke`, code_challenge_methods_supported: ["S256"] });
+      return json(200, { issuer: base + "/o", authorization_endpoint: `${base}/o/oauth2/auth`, token_endpoint: `${base}/o/oauth2/v2/token`, revocation_endpoint: `${base}/o/oauth2/revoke`, registration_endpoint: `${base}/o/register`, code_challenge_methods_supported: ["S256"] });
+    }
+    if (url.pathname === "/o/register" && req.method === "POST") {
+      let body = "";
+      for await (const c of req) body += c;
+      const b = JSON.parse(body || "{}");
+      registrations.push(b);
+      const client_id = `dyn-${registrations.length}`;
+      clients.set(client_id, b.redirect_uris || []);
+      return json(201, { client_id, redirect_uris: b.redirect_uris, token_endpoint_auth_method: "none" });
     }
     if (url.pathname === "/o/oauth2/auth") {
       const q = Object.fromEntries(url.searchParams);
       authorizeCalls.push(q);
+      if (requireRegistered) {
+        if (!clients.has(q.client_id)) return json(400, { error: "invalid_client" });
+        if (!clients.get(q.client_id).includes(q.redirect_uri)) return json(400, { error: "invalid_redirect_uri" });
+      }
       const code = `code-${++n}`;
       codes.set(code, { challenge: q.code_challenge, redirectUri: q.redirect_uri, resource: q.resource });
       res.writeHead(302, { location: `${q.redirect_uri}?code=${code}&state=${encodeURIComponent(q.state || "")}` });
@@ -43,6 +59,7 @@ export async function startFakeAuth({ validTokens = new Set() } = {}) {
       for await (const c of req) body += c;
       const f = Object.fromEntries(new URLSearchParams(body));
       tokenCalls.push(f);
+      if (requireRegistered && !clients.has(f.client_id)) return json(400, { error: "invalid_client" });
       if (f.grant_type === "authorization_code") {
         const c = codes.get(f.code);
         if (!c) return json(400, { error: "invalid_grant", error_description: "unknown code" });
@@ -68,6 +85,7 @@ export async function startFakeAuth({ validTokens = new Set() } = {}) {
     issuer: `${base}/o`,
     authorizeCalls,
     tokenCalls,
+    registrations,
     /** Make every current access token invalid (MCP answers 401 until a refresh). */
     rotate: () => validTokens.clear(),
     setInvalidGrant: (b) => (invalidGrant = b),

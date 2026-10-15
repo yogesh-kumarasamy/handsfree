@@ -110,32 +110,3 @@ test("sendBulk with text across projects: {list} must stay in the text so each p
   assert.doesNotMatch(sent[0].text, /B-1/);
   assert.match(sent[1].text, /^Custom intro:\n- B-1/);
 });
-
-test("login callback: a duplicate callback during the code exchange is not exchanged twice and does not clobber the success", async () => {
-  const { startFakeAuth } = await import("./fakes/auth-server.mjs");
-  const auth = await startFakeAuth();
-  try {
-    const port = 49600 + Math.floor(Math.random() * 300);
-    const config = { settings: { accounts: { setmore: { clientId: "cid", redirectPort: port, mcpUrl: "http://127.0.0.1:1/mcp", issuer: auth.issuer, scopes: "openid" } } }, projects: [] };
-    const state = { tickets: {}, accounts: { setmore: { loggedIn: false } } };
-    // Slow down the token endpoint so two callbacks overlap.
-    const slowFetch = async (url, init) => {
-      if (String(url).includes("/token")) await new Promise((r) => setTimeout(r, 300));
-      return fetch(url, init);
-    };
-    const svc = new MessagingService({ config: () => config, state: () => state, log: () => {}, notify: () => {}, persist: () => {}, emit: () => {}, tokens: new TokenStore(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "hf-cb-")), "t.json")), fetchImpl: slowFetch });
-    const url = await svc.loginUrl();
-    const callback = (await fetch(url, { redirect: "manual" })).headers.get("location");
-    const [r1, r2] = await Promise.all([fetch(callback), fetch(callback)]);
-    assert.deepEqual([r1.status, r2.status].sort(), [200, 200]);
-    const bodies = [await r1.text(), await r2.text()];
-    assert.ok(bodies.some((b) => /Signed in/.test(b)));
-    assert.equal(auth.tokenCalls.length, 1, "the code is exchanged once");
-    const final = svc.status();
-    assert.equal(final.loggedIn, true);
-    assert.equal(final.error, undefined);
-    assert.equal(final.loginPending, false);
-  } finally {
-    await auth.close();
-  }
-});

@@ -17,6 +17,8 @@ export interface AuthMeta {
   authorizationEndpoint: string;
   tokenEndpoint: string;
   revocationEndpoint?: string;
+  /** RFC 7591 dynamic client registration endpoint, when the server offers one. */
+  registrationEndpoint?: string;
 }
 
 export class OAuthError extends Error {
@@ -38,7 +40,12 @@ export async function discover(issuer: string, f: Fetch = fetch): Promise<AuthMe
       if (!r.ok) continue;
       const j = (await r.json()) as Record<string, string>;
       if (j.authorization_endpoint && j.token_endpoint) {
-        return { authorizationEndpoint: j.authorization_endpoint, tokenEndpoint: j.token_endpoint, revocationEndpoint: j.revocation_endpoint };
+        return {
+          authorizationEndpoint: j.authorization_endpoint,
+          tokenEndpoint: j.token_endpoint,
+          revocationEndpoint: j.revocation_endpoint,
+          registrationEndpoint: j.registration_endpoint,
+        };
       }
     } catch {
       /* try the next */
@@ -103,12 +110,55 @@ async function tokenRequest(meta: AuthMeta, params: Record<string, string | unde
   }
 }
 
-export function exchangeCode(meta: AuthMeta, o: { clientId: string; code: string; redirectUri: string; verifier: string; resource?: string }, f: Fetch = fetch) {
-  return tokenRequest(meta, { grant_type: "authorization_code", client_id: o.clientId, code: o.code, redirect_uri: o.redirectUri, code_verifier: o.verifier, resource: o.resource }, f);
+/** `clientSecret` is sent (client_secret_post) only when the client has one, e.g. from a registration. */
+export function exchangeCode(
+  meta: AuthMeta,
+  o: { clientId: string; clientSecret?: string; code: string; redirectUri: string; verifier: string; resource?: string },
+  f: Fetch = fetch,
+) {
+  return tokenRequest(
+    meta,
+    { grant_type: "authorization_code", client_id: o.clientId, client_secret: o.clientSecret || undefined, code: o.code, redirect_uri: o.redirectUri, code_verifier: o.verifier, resource: o.resource },
+    f,
+  );
 }
 
-export function refreshTokens(meta: AuthMeta, o: { clientId: string; refreshToken: string; resource?: string }, f: Fetch = fetch) {
-  return tokenRequest(meta, { grant_type: "refresh_token", client_id: o.clientId, refresh_token: o.refreshToken, resource: o.resource }, f);
+export function refreshTokens(meta: AuthMeta, o: { clientId: string; clientSecret?: string; refreshToken: string; resource?: string }, f: Fetch = fetch) {
+  return tokenRequest(meta, { grant_type: "refresh_token", client_id: o.clientId, client_secret: o.clientSecret || undefined, refresh_token: o.refreshToken, resource: o.resource }, f);
+}
+
+export interface RegisteredClient {
+  client_id: string;
+  client_secret?: string;
+  redirect_uris: string[];
+}
+
+/** RFC 7591 dynamic client registration for a native public client with a loopback redirect. */
+export async function registerClient(meta: AuthMeta, o: { redirectUri: string; clientName: string }, f: Fetch = fetch): Promise<RegisteredClient> {
+  if (!meta.registrationEndpoint) throw new OAuthError("registration_failed", "the server offers no registration_endpoint");
+  const r = await f(meta.registrationEndpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({
+      client_name: o.clientName,
+      redirect_uris: [o.redirectUri],
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      token_endpoint_auth_method: "none",
+      application_type: "native",
+    }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  const text = await r.text();
+  if (!r.ok) throw new OAuthError("registration_failed", `HTTP ${r.status}: ${text.slice(0, 300)}`);
+  let j: Partial<RegisteredClient> = {};
+  try {
+    j = JSON.parse(text);
+  } catch {
+    /* not JSON */
+  }
+  if (!j.client_id) throw new OAuthError("registration_failed", `no client_id in the response: ${text.slice(0, 300)}`);
+  return { client_id: j.client_id, client_secret: j.client_secret || undefined, redirect_uris: j.redirect_uris || [o.redirectUri] };
 }
 
 export async function revokeToken(meta: AuthMeta, o: { clientId: string; token: string }, f: Fetch = fetch) {
@@ -148,17 +198,17 @@ export function tokensFromResponse(r: TokenResponse, nowMs = Date.now(), prev?: 
   };
 }
 
-/** Tokens on disk, mode 0600, written atomically. */
-export class TokenStore {
+/** A JSON secret on disk, mode 0600, written atomically. */
+class SecretFile<T> {
   constructor(private file: string) {}
-  load(): StoredTokens | undefined {
+  load(): T | undefined {
     try {
-      return JSON.parse(fs.readFileSync(this.file, "utf8")) as StoredTokens;
+      return JSON.parse(fs.readFileSync(this.file, "utf8")) as T;
     } catch {
       return undefined;
     }
   }
-  save(t: StoredTokens) {
+  save(t: T) {
     fs.mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 });
     const tmp = `${this.file}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(t, null, 2), { mode: 0o600 });
@@ -172,3 +222,17 @@ export class TokenStore {
     }
   }
 }
+
+/** Tokens on disk, mode 0600, written atomically. */
+export class TokenStore extends SecretFile<StoredTokens> {}
+
+export interface StoredClient {
+  clientId: string;
+  clientSecret?: string;
+  /** The redirect URI the client was registered with; a different port means registering again. */
+  redirectUri: string;
+  registeredAt: string;
+}
+
+/** A dynamically registered OAuth client on disk, mode 0600. */
+export class ClientStore extends SecretFile<StoredClient> {}
