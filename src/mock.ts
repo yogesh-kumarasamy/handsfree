@@ -7,6 +7,7 @@ import {
   type Config,
   type EngineEvent,
   type EngineState,
+  type PrInfo,
   type Ticket,
 } from "../engine/src/types";
 
@@ -97,6 +98,20 @@ function t(p: Partial<Ticket> & Pick<Ticket, "key" | "projectId" | "summary" | "
   };
 }
 
+const pr = (number: number, repo: string, over: Partial<PrInfo> = {}): PrInfo => ({
+  url: `https://github.com/anywhere/${repo}/pull/${number}`,
+  number,
+  draft: false,
+  state: "open",
+  headSha: "9f3c2a1b7e",
+  ci: "passing",
+  failedChecks: [],
+  reviewDecision: "",
+  fixRounds: 0,
+  checkedAt: ago(2),
+  ...over,
+});
+
 function demoState(scenario: DemoOptions["scenario"]): EngineState {
   if (scenario === "empty") return { tickets: {}, pollErrors: {}, prCheckErrors: {} };
   const list: Ticket[] = [
@@ -141,6 +156,7 @@ function demoState(scenario: DemoOptions["scenario"]): EngineState {
       summary: "Fix unread badge not clearing on mobile Safari",
       status: "pr_draft",
       prUrl: "https://github.com/anywhere/chatsupport-web/pull/2211",
+      pr: pr(2211, "chatsupport-web", { draft: true, ci: "pending" }),
       jiraCommented: true,
       attempts: [{ agentName: "Claude Code", startedAt: ago(190), endedAt: ago(151), exitCode: 0, outcome: "success" }],
       createdAt: ago(191),
@@ -150,12 +166,42 @@ function demoState(scenario: DemoOptions["scenario"]): EngineState {
       key: "SET-975",
       projectId: "p2",
       summary: "Add pagination to GET /v2/customers",
-      status: "pr_draft",
+      status: "pr_ci_failed",
       prUrl: "https://github.com/anywhere/setmore-api/pull/877",
+      pr: pr(877, "setmore-api", { ci: "failing", fixRounds: 2, lastFixSha: "9f3c2a1b7e", failedChecks: [{ name: "unit tests", detailsUrl: "https://github.com/anywhere/setmore-api/actions/runs/771/job/1", runId: "771" }] }),
+      error: "Every agent in the chain failed. Check the log, then Retry.",
       jiraCommented: true,
       attempts: [{ agentName: "Grok", startedAt: ago(260), endedAt: ago(232), exitCode: 0, outcome: "success" }],
       createdAt: ago(261),
       updatedAt: ago(231),
+    }),
+    t({
+      key: "CSW-1411",
+      projectId: "p1",
+      summary: "Rate-limit the public widget endpoint",
+      status: "running",
+      currentAgent: "Claude Code",
+      prUrl: "https://github.com/anywhere/chatsupport-web/pull/2204",
+      jiraCommented: true,
+      pr: pr(2204, "chatsupport-web", { ci: "failing", lastFixSha: "9f3c2a1b7e", failedChecks: [{ name: "lint", runId: "802" }] }),
+      fix: { round: 1, headSha: "9f3c2a1b7e", failedChecks: [{ name: "lint", runId: "802" }], logs: "", requestedAt: ago(6) },
+      attempts: [
+        { agentName: "Claude Code", startedAt: ago(130), endedAt: ago(100), exitCode: 0, outcome: "success" },
+        { agentName: "Claude Code", startedAt: ago(5) },
+      ],
+      createdAt: ago(131),
+    }),
+    t({
+      key: "CSW-1385",
+      projectId: "p1",
+      summary: "Export conversations as CSV",
+      status: "pr_approved",
+      prUrl: "https://github.com/anywhere/chatsupport-web/pull/2199",
+      jiraCommented: true,
+      pr: pr(2199, "chatsupport-web", { reviewDecision: "APPROVED", approvedAt: ago(48), mergeNudgedAt: ago(18) }),
+      attempts: [{ agentName: "Claude Code", startedAt: ago(400), endedAt: ago(360), exitCode: 0, outcome: "success" }],
+      createdAt: ago(401),
+      updatedAt: ago(48),
     }),
     t({
       key: "CSW-1390",
@@ -174,8 +220,9 @@ function demoState(scenario: DemoOptions["scenario"]): EngineState {
       key: "CSW-1377",
       projectId: "p1",
       summary: "Sanitize HTML in agent notes",
-      status: "done",
+      status: "merged",
       prUrl: "https://github.com/anywhere/chatsupport-web/pull/2190",
+      pr: pr(2190, "chatsupport-web", { state: "merged", mergedAt: ago(400), reviewDecision: "APPROVED", approvedAt: ago(460) }),
       jiraCommented: true,
       attempts: [{ agentName: "Claude Code", startedAt: ago(1500), endedAt: ago(1460), exitCode: 0, outcome: "success" }],
       createdAt: ago(1501),
@@ -185,6 +232,8 @@ function demoState(scenario: DemoOptions["scenario"]): EngineState {
   return {
     tickets: Object.fromEntries(list.map((x) => [x.key, x])),
     lastPollAt: ago(6),
+    lastPrCheckAt: ago(2),
+    nextPrCheckAt: new Date(Date.now() + 60_000).toISOString(),
     nextPollAt: new Date(Date.now() + 9 * 60_000).toISOString(),
     pollErrors: {},
     prCheckErrors: {},
