@@ -19,6 +19,23 @@ export interface TrackerServiceDeps {
   fetchImpl?: typeof fetch;
 }
 
+/**
+ * The stored registered client, or a fresh registration (stored) when there is none, or it was registered for another
+ * redirect URI (the port changed) or another OAuth server.
+ */
+export async function ensureRegisteredClient(
+  store: ClientStore,
+  o: { redirectUri: string; issuer: string },
+  fetchImpl?: typeof fetch,
+): Promise<{ clientId: string; clientSecret?: string }> {
+  const cur = store.load();
+  if (cur && cur.redirectUri === o.redirectUri && (!cur.issuer || cur.issuer === o.issuer)) return { clientId: cur.clientId, clientSecret: cur.clientSecret };
+  const meta = await discover(o.issuer, fetchImpl);
+  const r = await registerClient(meta, { redirectUri: o.redirectUri, clientName: "HandsFree" }, fetchImpl);
+  store.save({ clientId: r.client_id, clientSecret: r.client_secret, redirectUri: o.redirectUri, issuer: o.issuer, registeredAt: new Date().toISOString() });
+  return { clientId: r.client_id, clientSecret: r.client_secret };
+}
+
 export class TrackerService {
   private login: LoopbackLogin;
   private conn?: LinearConnection;
@@ -40,16 +57,9 @@ export class TrackerService {
     });
   }
 
-  /** The stored registered client, or a fresh registration when there is none or it was made for another redirect URI/server. */
-  private async registeredClient() {
+  private registeredClient() {
     const s = this.deps.config().settings.accounts.linear;
-    const redirectUri = `http://127.0.0.1:${s.redirectPort}/oauth/callback`;
-    const cur = this.deps.client.load();
-    if (cur && cur.redirectUri === redirectUri && (!cur.issuer || cur.issuer === s.issuer)) return { clientId: cur.clientId, clientSecret: cur.clientSecret };
-    const meta = await discover(s.issuer, this.deps.fetchImpl);
-    const r = await registerClient(meta, { redirectUri, clientName: "HandsFree" }, this.deps.fetchImpl);
-    this.deps.client.save({ clientId: r.client_id, clientSecret: r.client_secret, redirectUri, issuer: s.issuer, registeredAt: new Date().toISOString() });
-    return { clientId: r.client_id, clientSecret: r.client_secret };
+    return ensureRegisteredClient(this.deps.client, { redirectUri: `http://127.0.0.1:${s.redirectPort}/oauth/callback`, issuer: s.issuer }, this.deps.fetchImpl);
   }
 
   // ---------- Linear account ----------
