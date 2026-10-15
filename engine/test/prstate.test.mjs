@@ -145,3 +145,13 @@ test("buildFixPrompt: names the PR, the checks, the round, includes the logs and
   assert.match(s, /Do NOT push/);
   assert.match(s, /## Project notes\nUse pnpm\./);
 });
+
+test("summarizeChecks: a re-run job supersedes its earlier failure (latest run per workflow+name wins)", () => {
+  const old = { __typename: "CheckRun", name: "test", workflowName: "CI", status: "COMPLETED", conclusion: "FAILURE", startedAt: "2026-10-15T10:00:00Z", detailsUrl: "https://example.com/actions/runs/1/job/1" };
+  const fresh = { __typename: "CheckRun", name: "test", workflowName: "CI", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-10-15T10:30:00Z", detailsUrl: "https://example.com/actions/runs/2/job/1" };
+  assert.equal(summarizeChecks([old, fresh]).ci, "passing");
+  assert.equal(summarizeChecks([fresh, old]).ci, "passing", "order independent");
+  const other = { ...old, workflowName: "Nightly" };
+  assert.equal(summarizeChecks([other, fresh]).ci, "failing", "same name in another workflow is a different check");
+  assert.equal(summarizeChecks([{ ...old, startedAt: undefined }, { ...fresh, startedAt: undefined }]).ci, "passing", "without timestamps the later entry wins");
+});

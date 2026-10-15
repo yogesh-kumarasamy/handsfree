@@ -46,11 +46,18 @@ export async function ensureWorktree(project: ProjectConfig, t: Ticket): Promise
   const remoteRef = `${project.remote}/${project.baseBranch}`;
   const hasRemote = (await tryGit(repo, ["rev-parse", "--verify", "--quiet", remoteRef])) !== undefined;
   const baseRef = hasRemote ? remoteRef : project.baseBranch;
-  // The branch may already be pushed (e.g. the worktree was cleaned up and CI now fails): continue it, don't restart from base.
+  // A ticket with a PR continues its pushed branch (e.g. the worktree was cleaned up and CI now fails).
+  // A ticket without one is fresh work and starts from base, even if an old branch of the same name is still on the remote.
   // Trust the remote-tracking ref only when the fetch succeeds: a stale ref outlives a deleted remote branch.
-  const fetchedBranch = await exec("git", ["fetch", project.remote, t.branch], { cwd: repo, timeoutMs: 180_000 });
   const remoteBranch = `${project.remote}/${t.branch}`;
-  const pushed = fetchedBranch.code === 0 && (await tryGit(repo, ["rev-parse", "--verify", "--quiet", remoteBranch])) !== undefined;
+  let pushed = false;
+  if (t.prUrl) {
+    const fetchedBranch = await exec("git", ["fetch", project.remote, t.branch], { cwd: repo, timeoutMs: 180_000 });
+    if (fetchedBranch.code === 0) pushed = (await tryGit(repo, ["rev-parse", "--verify", "--quiet", remoteBranch])) !== undefined;
+    else if (!(await branchGone(repo, project, t))) {
+      throw new Error(`couldn't fetch ${remoteBranch}, which this PR is built on: ${(fetchedBranch.stderr || fetchedBranch.stdout).trim().slice(0, 300)}`);
+    }
+  }
   await tryGit(repo, ["worktree", "prune"]);
   fs.mkdirSync(path.dirname(t.worktree), { recursive: true });
   await git(repo, ["worktree", "add", "-B", t.branch, t.worktree, pushed ? remoteBranch : baseRef]);
@@ -85,12 +92,50 @@ export async function commitsAhead(wt: string, baseRef: string) {
   return Number((await tryGit(wt, ["rev-list", "--count", `${baseRef}..HEAD`])) || 0);
 }
 
-export async function push(project: ProjectConfig, t: Ticket) {
+/** True when the remote has no such branch any more (exit 2 from ls-remote). Network errors count as "not gone". */
+async function branchGone(cwd: string, project: ProjectConfig, t: Ticket) {
+  const ls = await exec("git", ["ls-remote", "--exit-code", "--heads", project.remote, t.branch], { cwd, timeoutMs: 60_000 });
+  return ls.code === 2;
+}
+
+/**
+ * Before building on a branch that already has a PR: bring the worktree level with what is on the remote
+ * (someone may have pushed — "Update branch", a reviewer's suggestion, another machine). Fast-forwards when
+ * the worktree is behind; refuses when the two diverged. Returns the remote head to lease the push on
+ * (null when the remote branch is gone).
+ */
+export async function syncWithRemote(project: ProjectConfig, t: Ticket): Promise<{ remoteSha: string | null; fastForwarded: boolean }> {
+  const f = await exec("git", ["fetch", project.remote, t.branch], { cwd: t.worktree, timeoutMs: 180_000 });
+  if (f.code !== 0) {
+    if (await branchGone(t.worktree, project, t)) return { remoteSha: null, fastForwarded: false };
+    throw new Error(`couldn't fetch ${project.remote}/${t.branch}: ${(f.stderr || f.stdout).trim().slice(0, 300)}`);
+  }
+  const remoteSha = await git(t.worktree, ["rev-parse", "FETCH_HEAD"]);
+  const local = await git(t.worktree, ["rev-parse", "HEAD"]);
+  if (remoteSha === local) return { remoteSha, fastForwarded: false };
+  const isAncestor = async (a: string, b: string) => (await exec("git", ["merge-base", "--is-ancestor", a, b], { cwd: t.worktree, timeoutMs: 60_000 })).code === 0;
+  if (await isAncestor(local, remoteSha)) {
+    await git(t.worktree, ["merge", "--ff-only", remoteSha]);
+    return { remoteSha, fastForwarded: true };
+  }
+  if (await isAncestor(remoteSha, local)) return { remoteSha, fastForwarded: false }; // local is ahead: commits not pushed yet
+  throw new Error(
+    `${project.remote}/${t.branch} and this worktree have diverged (someone rewrote the branch). Open it in Terminal, merge or rebase onto ${project.remote}/${t.branch}, then press Fix CI again.`,
+  );
+}
+
+/**
+ * Push the branch. `leaseSha` (from syncWithRemote) pins --force-with-lease to the exact remote head the work was
+ * built on, so a push never overwrites commits that landed meanwhile. `null` = the remote branch is gone.
+ */
+export async function push(project: ProjectConfig, t: Ticket, leaseSha?: string | null) {
   // A remote-tracking ref can outlive its branch (GitHub deletes merged branches). --force-with-lease would then
   // refuse with "stale info", so drop the stale ref — but only when the branch is really gone, to keep the lease honest.
-  const ls = await exec("git", ["ls-remote", "--exit-code", "--heads", project.remote, t.branch], { cwd: t.worktree, timeoutMs: 60_000 });
-  if (ls.code === 2) await tryGit(t.worktree, ["update-ref", "-d", `refs/remotes/${project.remote}/${t.branch}`]);
-  await git(t.worktree, ["push", "-u", "--force-with-lease", project.remote, `HEAD:refs/heads/${t.branch}`], 300_000);
+  if (leaseSha === null || (leaseSha === undefined && (await branchGone(t.worktree, project, t)))) {
+    await tryGit(t.worktree, ["update-ref", "-d", `refs/remotes/${project.remote}/${t.branch}`]);
+  }
+  const lease = leaseSha ? `--force-with-lease=refs/heads/${t.branch}:${leaseSha}` : "--force-with-lease";
+  await git(t.worktree, ["push", "-u", lease, project.remote, `HEAD:refs/heads/${t.branch}`], 300_000);
 }
 
 export async function removeWorktree(project: ProjectConfig, t: Ticket) {

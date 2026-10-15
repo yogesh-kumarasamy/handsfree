@@ -31,6 +31,7 @@ export function Dashboard({
   const [selected, setSelected] = useState<string | undefined>(initialTicket);
   const [showClosed, setShowClosed] = useState(false);
   const [showAllMerged, setShowAllMerged] = useState(false);
+  const [notice, setNotice] = useState<string>();
   const projects = useMemo(() => Object.fromEntries(config.projects.map((p) => [p.id, p])), [config]);
 
   const sorted = useMemo(
@@ -59,6 +60,9 @@ export function Dashboard({
     return ago(t.updatedAt);
   };
   const prLink = (t: Ticket) => t.prUrl && <button className="btn sm ghost" onClick={() => openExternal(t.prUrl!)}>PR ↗</button>;
+  // Row buttons talk to the engine; its refusals ("CI isn't failing right now", gh errors) must reach the user.
+  const act = (label: string, fn: () => Promise<unknown>) =>
+    fn().then(() => setNotice(undefined), (e) => setNotice(`${label}: ${String((e as Error).message || e)}`));
 
   return (
     <div className="page">
@@ -71,13 +75,20 @@ export function Dashboard({
           </div>
         </div>
         <div className="row">
-          <button className="btn" onClick={() => api.checkPrsNow()}>{Icon.refresh} Check PRs now</button>
+          <button className="btn" onClick={() => act("Check PRs", () => api.checkPrsNow())}>{Icon.refresh} Check PRs now</button>
           <button className="btn" onClick={() => api.pollNow()} disabled={config.settings.paused}>
             {Icon.refresh} Check Jira now
           </button>
         </div>
       </div>
 
+      {notice && (
+        <div className="callout err" style={{ marginBottom: 12 }}>
+          <span className="t">{notice}</span>
+          <div className="spacer" />
+          <button className="btn ghost sm" onClick={() => setNotice(undefined)} title="Dismiss">✕</button>
+        </div>
+      )}
       {pollErrors.map(([pid, err]) => (
         <div key={pid} className="callout err" style={{ marginBottom: 12 }}>
           <b>{projects[pid]?.name || pid}:</b> <span className="t">{err}</span>
@@ -170,8 +181,8 @@ export function Dashboard({
                           <td className="small muted">{inState(t)}</td>
                           <td onClick={stop}>
                             <div className="row" style={{ gap: 6, justifyContent: "flex-end" }}>
-                              {t.status === "pr_draft" && <button className="btn sm primary" onClick={() => api.publish(t.key)}>Publish</button>}
-                              {t.status === "pr_ci_failed" && <button className="btn sm primary" onClick={() => api.fixCi(t.key)}>Fix CI</button>}
+                              {t.status === "pr_draft" && <button className="btn sm primary" onClick={() => act(`Publish ${t.key}`, () => api.publish(t.key))}>Publish</button>}
+                              {t.status === "pr_ci_failed" && <button className="btn sm primary" onClick={() => act(`Fix CI ${t.key}`, () => api.fixCi(t.key))}>Fix CI</button>}
                               {prLink(t)}
                             </div>
                           </td>
@@ -211,7 +222,7 @@ export function Dashboard({
           )}
 
           {/* Merged */}
-          {(mergedAll.length > 0 || showClosed) && (
+          {by("merged").length > 0 && (
             <div className="card section-card" style={{ overflow: "hidden" }}>
               <div className="section-head">
                 <div className="card-title" style={{ margin: 0 }}>Merged</div><span className="count">{mergedAll.length}</span>

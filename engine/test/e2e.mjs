@@ -249,8 +249,74 @@ try {
   }, "rounds exhausted");
   assert.equal(exhausted.fix, undefined);
   assert.match((await api("/api/tickets/DEMO-1/log")).log, /🔔 CI still failing/);
-  await api("/api/tickets/DEMO-1/fix-ci", "POST", {});
+  // Someone pushed to the PR branch meanwhile (GitHub "Update branch", a suggestion, another machine):
+  // the fix must build on top of it, never overwrite it. Two Fix CI clicks at once queue one round.
+  const clone = path.join(root, "clone");
+  sh(`git clone -q ${remote} ${clone}`);
+  sh(`git config user.email t@t.t && git config user.name T && git checkout -q handsfree/DEMO-1 && echo ext > ext.txt && git add -A && git commit -qm "external: reviewer suggestion" && git push -q origin handsfree/DEMO-1`, clone);
+  const [fixA, fixB] = await Promise.all([api("/api/tickets/DEMO-1/fix-ci", "POST", {}), api("/api/tickets/DEMO-1/fix-ci", "POST", {})]);
+  assert.ok([fixA, fixB].filter((r) => r.error).length === 1, "second concurrent Fix CI is refused");
   await waitFor(async () => (await ticket("DEMO-1")).pr?.fixRounds === 3, "manual fix round 3", 60000);
+  assert.equal((await ticket("DEMO-1")).status, "pr_ready");
+  assert.match(sh(`git log --oneline main..handsfree/DEMO-1`, remote), /external: reviewer suggestion/, "the external commit survived the fix push");
+  assert.equal(commitsOnRemote(), "5", "external commit + fix commit on top of the 3 earlier ones");
+  assert.match((await api("/api/tickets/DEMO-1/log")).log, /synced with origin\/handsfree\/DEMO-1/);
+
+  // ---- A fix agent that changes nothing is not a fix: falls through the chain, round still counted
+  const realAgents = project.agents;
+  project.agents = [{ id: "n", name: "Noop", command: "true", enabled: true, exhaustionPatterns: [] }];
+  await api("/api/config", "PUT", { ...(await api("/api/config")), projects: [project] });
+  prJson(101, failing("ddd555", 560));
+  await checkPrs();
+  await waitFor(async () => (await ticket("DEMO-1")).status === "pr_ci_failed" && (await ticket("DEMO-1")).pr?.ci === "failing", "failing on ddd555");
+  await api("/api/tickets/DEMO-1/fix-ci", "POST", {});
+  const noop = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.pr?.fixRounds === 4 && t.status === "pr_ci_failed" && t;
+  }, "no-op fix round counted", 60000);
+  assert.match(noop.error, /Every agent in the chain failed/);
+  assert.match((await api("/api/tickets/DEMO-1/log")).log, /Noop finished but made no changes/);
+  assert.equal(commitsOnRemote(), "5", "nothing pushed for a no-op round");
+
+  // ---- Take over a running fix, then "Open PR with my changes": your commit is pushed, agents are not re-run
+  project.agents = [{ id: "s0", name: "Sleepy", command: "fakeslow", enabled: true, exhaustionPatterns: [], resumeCommand: "fakeslow --resume {session_id}", sessionIdPattern: "SESSION: ([\\w-]+)" }];
+  await api("/api/config", "PUT", { ...(await api("/api/config")), projects: [project] });
+  prJson(101, failing("eee666", 561));
+  await checkPrs();
+  await waitFor(async () => (await ticket("DEMO-1")).status === "pr_ci_failed" && (await ticket("DEMO-1")).pr?.headSha === "eee666", "failing on eee666");
+  await api("/api/tickets/DEMO-1/fix-ci", "POST", {});
+  await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.status === "running" && t.fix && t.attempts[t.attempts.length - 1]?.sessionId;
+  }, "fix round 5 running", 30000);
+  await api("/api/tickets/DEMO-1/takeover", "POST", {});
+  assert.equal((await ticket("DEMO-1")).status, "manual");
+  fs.writeFileSync(path.join(wt, "byhand.txt"), "fixed by hand\n");
+  const attemptsBefore = (await ticket("DEMO-1")).attempts.length;
+  await api("/api/tickets/DEMO-1/handback", "POST", { mode: "pr" });
+  const handedFix = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.status === "pr_ready" && t.pr?.fixRounds === 5 && t;
+  }, "hand-back after a fix take-over", 60000);
+  assert.equal(handedFix.fix, undefined);
+  assert.equal(handedFix.attempts.length, attemptsBefore + 1, "only the 'You' attempt was added; no agent re-run");
+  assert.equal(handedFix.attempts[handedFix.attempts.length - 1].agentName, "You");
+  assert.equal(commitsOnRemote(), "6", "your commit was pushed");
+  project.agents = realAgents;
+  await api("/api/config", "PUT", { ...(await api("/api/config")), projects: [project] });
+
+  // ---- The remote branch diverged from the worktree: refuse to build on it, never overwrite
+  sh(`git fetch -q origin && git reset -q --hard origin/handsfree/DEMO-1~1 && echo other > other.txt && git add -A && git commit -qm "diverged elsewhere" && git push -q --force origin handsfree/DEMO-1`, clone);
+  prJson(101, failing("fff777", 562));
+  await checkPrs();
+  await waitFor(async () => (await ticket("DEMO-1")).pr?.headSha === "fff777", "failing on fff777");
+  await api("/api/tickets/DEMO-1/fix-ci", "POST", {});
+  const diverged = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.pr?.fixRounds === 6 && t.status === "pr_ci_failed" && t;
+  }, "diverged fix refused", 60000);
+  assert.match(diverged.error, /diverged/);
+  assert.match(sh(`git log --oneline main..handsfree/DEMO-1`, remote), /diverged elsewhere/, "remote branch untouched");
 
   // ---- CI passes on a published PR → review_ready once
   prJson(101, { isDraft: false, headRefOid: "ddd444", statusCheckRollup: [{ __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "SUCCESS" }] });
@@ -288,10 +354,10 @@ try {
   assert.match((await api("/api/tickets/DEMO-1/log")).log, /🔔 Merged/);
 
   // failing chain → failed, then retry
-  // DEMO-2 is re-picked as fresh work: drop its worktree and the pushed branch so nothing is "continued".
+  // DEMO-2 is forgotten and re-picked as fresh work: even though its old branch is still on the remote,
+  // a ticket without a PR starts from the base branch.
   await api("/api/tickets/DEMO-2/cleanup", "POST");
   assert.equal((await ticket("DEMO-2")).status, "pr_draft", "cleanup keeps tracking an open PR");
-  sh("git branch -D handsfree/DEMO-2", remote);
   project.agents = [{ id: "x", name: "Broken", command: "false", enabled: true, exhaustionPatterns: [] }];
   const cfg = await api("/api/config");
   await api("/api/config", "PUT", { ...cfg, projects: [project] });
@@ -347,6 +413,7 @@ try {
   }, "DEMO-2 pr_open after hand back");
   assert.deepEqual(handed.attempts.map((a) => [a.agentName, a.outcome]), [["Sleepy", "taken_over"], ["You", "success"]]);
   assert.match(sh(`git log --oneline main..handsfree/DEMO-2`, remote), /DEMO-2/, "your change was committed and pushed");
+  assert.equal(sh(`git rev-list --count main..handsfree/DEMO-2`, remote), "1", "fresh pick-up started from main, not from the old pushed branch");
 
   const doc = await api("/api/doctor");
   assert.ok(doc.find((d) => d.name === "gh").ok);

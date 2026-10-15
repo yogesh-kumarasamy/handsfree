@@ -11,6 +11,8 @@ export interface RawCheck {
   state?: string;
   detailsUrl?: string;
   targetUrl?: string;
+  workflowName?: string;
+  startedAt?: string;
 }
 
 /** The fields we ask `gh pr view --json` for. */
@@ -37,11 +39,29 @@ function failedCheck(name: string, url?: string): FailedCheck {
   return { name, detailsUrl: url, runId };
 }
 
+/**
+ * GitHub keeps the old run next to the re-run in statusCheckRollup. Keep only the latest run per
+ * workflow + job name (by startedAt, else by position), like `gh pr checks` does.
+ */
+function latestRuns(rollup: RawCheck[]): RawCheck[] {
+  // Map keeps first-seen order; replacing a value keeps its slot, so the output order matches the input.
+  const byKey = new Map<string, RawCheck>();
+  rollup.forEach((c, i) => {
+    const isRun = c.__typename === "CheckRun" || c.status !== undefined || c.conclusion !== undefined;
+    const key = isRun ? `run:${c.workflowName || ""}/${c.name || c.context || ""}` : `ctx:${i}`;
+    const prev = byKey.get(key);
+    // Both timestamped: the later start wins. Otherwise the later entry in the list wins.
+    const newer = !prev || (c.startedAt && prev.startedAt ? c.startedAt >= prev.startedAt : true);
+    if (newer) byKey.set(key, c);
+  });
+  return [...byKey.values()];
+}
+
 export function summarizeChecks(rollup: RawCheck[] | null | undefined): { ci: CiStatus; failed: FailedCheck[] } {
   const failed: FailedCheck[] = [];
   let pending = false;
   let ok = 0;
-  for (const c of rollup || []) {
+  for (const c of latestRuns(rollup || [])) {
     const name = c.name || c.context || "check";
     const url = c.detailsUrl || c.targetUrl;
     const isContext = c.__typename === "StatusContext" || (c.state !== undefined && c.status === undefined && c.conclusion === undefined);

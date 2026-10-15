@@ -21,6 +21,7 @@ export default function App() {
 
   const [gen, setGen] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string>();
   useTick();
 
   // Bumping `gen` (the Refresh button) tears down the event stream, refetches, and resubscribes.
@@ -28,6 +29,7 @@ export default function App() {
     let unsub = () => {};
     let alive = true;
     setRefreshing(true);
+    setRefreshError(undefined);
     getApi()
       .then(async (a) => {
         setApi(a);
@@ -42,7 +44,8 @@ export default function App() {
           if (e.type === "notify") void notifyIfEnabled(e.title, e.body);
         });
       })
-      .catch((e) => setError(String(e?.message || e)))
+      // The first load failing means the engine is down: full-screen error. A later Refresh failing is shown inline.
+      .catch((e) => (gen === 0 ? setError(String(e?.message || e)) : setRefreshError(String(e?.message || e))))
       .finally(() => setRefreshing(false));
     return () => {
       alive = false;
@@ -125,9 +128,10 @@ export default function App() {
             {paused
               ? "Running agents finish; no new tickets."
               : active
-                ? `Next check ${until(state.nextPollAt)}`
+                ? `Next check ${until(state.nextPollAt)}${state.nextPrCheckAt ? ` · PRs ${until(state.nextPrCheckAt)}` : ""}`
                 : "Add a project to start"}
           </div>
+          {refreshError && <div className="engine-sub err-text" title={refreshError}>Refresh failed: {refreshError.slice(0, 60)}</div>}
           <div className="row" style={{ gap: 6 }}>
             <button className="btn sm" onClick={togglePause}>
               {paused ? Icon.play : Icon.pause} {paused ? "Resume" : "Pause"}

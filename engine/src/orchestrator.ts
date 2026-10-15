@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { changedFiles, commitAll, commitsAhead, ensureWorktree, hasUncommitted, headSha, push, removeWorktree, worktreePath } from "./git";
+import { changedFiles, commitAll, commitsAhead, ensureWorktree, hasUncommitted, headSha, push, removeWorktree, syncWithRemote, worktreePath } from "./git";
 import { createStreamFormatter } from "./streamfmt";
 import { failedCheckLogs, fetchPr, openPr, publishPr } from "./github";
 import { commentOnIssue, searchIssues } from "./jira";
@@ -16,6 +16,7 @@ import {
   type Config,
   type EngineEvent,
   type EngineState,
+  type FixContext,
   type NotifyKind,
   type PrEvent,
   type PrInfo,
@@ -210,6 +211,8 @@ export class Orchestrator {
       this.persist();
       return;
     }
+    // The fetch took a while: a fix may have been queued or started meanwhile. Don't overwrite its state.
+    if (this.running.has(t.key) || t.fix || !PR_STATUSES.includes(t.status)) return;
     const pr = toPrInfo(raw, t.pr);
     t.pr = pr;
     const status = nextStatus(pr);
@@ -264,14 +267,12 @@ export class Orchestrator {
     const max = manual ? Math.max(round, p.ciFixMaxRounds) : p.ciFixMaxRounds;
     const names = pr.failedChecks.map((c) => c.name).join(", ") || "unknown check";
     this.log(t.key, `\n✗ CI failed on ${pr.headSha.slice(0, 7)} (${names}) — queuing fix round ${round}/${max}${manual ? " (requested by you)" : ""}\n`);
-    const logs = await failedCheckLogs(p.repoPath, pr.failedChecks);
+    // Claim the fix before the slow log fetch, so a second trigger (auto + manual, or two clicks) sees it and backs off.
+    const fix: FixContext = { round, headSha: pr.headSha, failedChecks: pr.failedChecks, logs: "", requestedAt: now() };
     pr.lastFixSha = pr.headSha;
-    this.touch(t, {
-      status: "queued",
-      error: undefined,
-      agentIndex: 0,
-      fix: { round, headSha: pr.headSha, failedChecks: pr.failedChecks, logs, requestedAt: now() },
-    });
+    this.touch(t, { fix, error: undefined });
+    fix.logs = await failedCheckLogs(p.repoPath, pr.failedChecks);
+    this.touch(t, { status: "queued", agentIndex: 0 });
     this.pump();
   }
 
@@ -280,6 +281,7 @@ export class Orchestrator {
     const t = this.state.tickets[key];
     const p = t && this.project(t.projectId);
     if (!t?.prUrl || !p) throw new Error("This ticket has no PR yet.");
+    if (this.running.has(key) || t.fix) throw new Error("Wait for the CI fix to finish first.");
     await publishPr(p.repoPath, t.prUrl);
     this.log(key, "\n⇡ Published — marked ready for review\n");
     await this.checkPr(t);
@@ -349,8 +351,25 @@ export class Orchestrator {
     const mcpFile = path.join(hf, "mcp.json");
     fs.writeFileSync(mcpFile, p.mcpJson.trim() || '{"mcpServers":{}}');
 
-    // Skip the agents when the last attempt already succeeded (push/PR failed, or you handed back with your changes). A fix always runs them.
-    const alreadyDone = !t.fix && t.attempts[t.attempts.length - 1]?.outcome === "success";
+    // A branch with a PR may have moved on the remote (reviewer suggestion, "Update branch", another machine).
+    // Build on top of that, and remember its head so the push can't overwrite anything newer.
+    let leaseSha: string | null | undefined;
+    if (t.prUrl) {
+      try {
+        if (await hasUncommitted(t.worktree)) await commitAll(t.worktree, `${t.key}: ${t.summary}`);
+        const s = await syncWithRemote(p, t);
+        leaseSha = s.remoteSha;
+        this.log(t.key, s.remoteSha ? `↓ synced with ${p.remote}/${t.branch}${s.fastForwarded ? " (fast-forwarded to new commits)" : ""}\n` : `· ${p.remote}/${t.branch} no longer exists on the remote\n`);
+      } catch (e) {
+        return this.fail(t, `Couldn't sync with the PR branch: ${(e as Error).message}`);
+      }
+    }
+    const startSha = await headSha(t.worktree).catch(() => "");
+
+    // Skip the agents when the last attempt already succeeded: push/PR failed and this is a retry, or you handed
+    // back with your own changes (also during a fix). Otherwise a fix always runs them.
+    const last = t.attempts[t.attempts.length - 1];
+    const alreadyDone = last?.outcome === "success" && (!t.fix || last.agentName === "You");
     let winner: AgentConfig | undefined;
 
     if (!alreadyDone) {
@@ -363,7 +382,7 @@ export class Orchestrator {
         t.attempts.push(attempt);
         this.touch(t, { agentIndex: i, currentAgent: agent.name, slow: undefined });
 
-        const outcome = await this.runAgent(p, t, agent, attempt, i, chain.length, mcpFile);
+        const outcome = await this.runAgent(p, t, agent, attempt, i, chain.length, mcpFile, startSha);
         Object.assign(attempt, { endedAt: now(), outcome });
         this.touch(t);
 
@@ -392,7 +411,7 @@ export class Orchestrator {
     try {
       this.touch(t, { currentAgent: undefined, slow: undefined });
       this.log(t.key, `\n⇡ Pushing ${t.branch}\n`);
-      await push(p, t);
+      await push(p, t, leaseSha);
       const lastOk = [...t.attempts].reverse().find((a) => a.outcome === "success");
       const body = prBody(t, lastOk?.agentName || winner?.name || "agent", this.readLog(t.key, 20_000));
       // A ticket that already has a PR (CI fix, hand-back after cleanup) pushes to it; never open a second one.
@@ -428,7 +447,7 @@ export class Orchestrator {
     }
   }
 
-  private async runAgent(p: ProjectConfig, t: Ticket, agent: AgentConfig, attempt: Attempt, i: number, total: number, mcpFile: string) {
+  private async runAgent(p: ProjectConfig, t: Ticket, agent: AgentConfig, attempt: Attempt, i: number, total: number, mcpFile: string, startSha: string) {
     const promptFile = path.join(t.worktree, ".handsfree", "prompt.md");
     const prompt = t.fix ? buildFixPrompt(p, t, t.fix) : buildPrompt(p, t, i > 0 || t.attempts.length > 1);
     fs.writeFileSync(promptFile, prompt);
@@ -530,7 +549,8 @@ export class Orchestrator {
         this.log(t.key, "\n• Committing changes the agent left uncommitted\n");
         await commitAll(t.worktree, `${t.key}: ${t.summary}`);
       }
-      const ahead = await commitsAhead(t.worktree, t.baseRef!);
+      // A fix branch is always ahead of base (the feature commits), so "no changes" is measured from where this run started.
+      const ahead = await commitsAhead(t.worktree, t.fix && startSha ? startSha : t.baseRef!);
       if (ahead === 0) {
         attempt.note = "Exited without changes";
         this.log(t.key, `\n✖ ${agent.name} finished but made no changes\n`);
