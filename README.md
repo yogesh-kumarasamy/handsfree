@@ -51,6 +51,18 @@ Other commands: `npm run test:engine` (engine e2e test), `npm run engine` (engin
 
 Agents are told to commit but not push. HandsFree commits anything left uncommitted, pushes `handsfree/<KEY>`, opens the PR with `gh`, and comments the link on the ticket. Jira status is never changed.
 
+### Watch or step in (any agent)
+
+Every ticket has one **Open** button:
+
+- **Running → 👀 Open live.** Terminal shows the agent's live output. Close the window to stop watching; the agent keeps going. Press **Enter** to take over: HandsFree stops the agent and continues its session right there, so you can talk to it.
+- **Failed / stopped → Take over.** Continues the last agent's session in its worktree.
+- **When you're done**, the ticket shows **With you**. Choose **Open PR with my changes** (commit, push, draft PR, Jira comment) or **Hand back to agents** (re-run the chain; agents are told you changed things).
+
+Long runs get a **⏱ slow** flag and a notification after *Settings → Flag as slow after* (default 30 min).
+
+Resuming uses each agent's **Resume command** (Projects → agent → *Take over*). Claude's is built in (`claude --resume {session_id} --mcp-config {mcp_file}`). For other tools, add their resume command and a **Session ID pattern** that finds the session ID in their output. Without one, you get a shell in the worktree with the agent's changes.
+
 ### Command placeholders
 
 HandsFree shell-quotes these, so don't wrap them in quotes:

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { Config, EngineState, ProjectConfig, Settings } from "./types";
+import { CLAUDE_RESUME, type Config, type EngineState, type ProjectConfig, type Settings } from "./types";
 
 export const DATA_DIR =
   process.env.HF_DATA ||
@@ -19,6 +19,7 @@ export const DEFAULT_SETTINGS: Settings = {
   pollIntervalMin: 15,
   maxParallel: 2,
   agentTimeoutMin: 90,
+  slowAfterMin: 30,
   paused: false,
   notifications: true,
   launchAtLogin: false,
@@ -56,6 +57,9 @@ export function normalizeProject(p: Partial<ProjectConfig>): ProjectConfig {
       command: a.command || "",
       enabled: a.enabled ?? true,
       exhaustionPatterns: a.exhaustionPatterns || [],
+      // Older Claude agents had no resume command; give them the standard one.
+      resumeCommand: a.resumeCommand ?? (/^\s*claude\b/.test(a.command || "") ? CLAUDE_RESUME : ""),
+      sessionIdPattern: a.sessionIdPattern || "",
     })),
     promptExtra: p.promptExtra || "",
     draftPr: p.draftPr ?? true,

@@ -35,6 +35,7 @@ export function Toggle({ on, onChange, title }: { on: boolean; onChange: (v: boo
 const LABEL: Record<TicketStatus, string> = {
   queued: "Queued",
   running: "Running",
+  manual: "With you",
   pr_open: "PR open",
   failed: "Failed",
   stopped: "Stopped",

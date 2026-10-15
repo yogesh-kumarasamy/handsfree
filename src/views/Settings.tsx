@@ -22,7 +22,7 @@ export function SettingsView({ api, config }: { api: Api; config: Config }) {
     void runDoctor();
   }, []);
 
-  const num = (key: "pollIntervalMin" | "maxParallel" | "agentTimeoutMin", min: number, max: number) => (
+  const num = (key: "pollIntervalMin" | "maxParallel" | "agentTimeoutMin" | "slowAfterMin", min: number, max: number) => (
     <input
       className="input num-input"
       type="number"
@@ -55,6 +55,10 @@ export function SettingsView({ api, config }: { api: Api; config: Config }) {
         <div className="setting-row">
           <div className="txt"><b>Max parallel tickets</b><span>Worktrees with an agent running at the same time, across all projects.</span></div>
           {num("maxParallel", 1, 12)}<span className="muted" style={{ width: 22 }} />
+        </div>
+        <div className="setting-row">
+          <div className="txt"><b>Flag as slow after</b><span>Marks the ticket ⏱ and notifies you, so you can open it live and step in. The agent keeps running.</span></div>
+          {num("slowAfterMin", 1, 600)}<span className="muted">min</span>
         </div>
         <div className="setting-row">
           <div className="txt"><b>Agent timeout</b><span>An agent running longer than this is stopped and the next one takes over.</span></div>

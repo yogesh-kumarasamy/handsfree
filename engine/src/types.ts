@@ -8,6 +8,13 @@ export interface AgentConfig {
   enabled: boolean;
   /** Case-insensitive regexes checked against the tail of the agent's output. A match = token/usage exhausted → next agent. */
   exhaustionPatterns: string[];
+  /**
+   * Interactive command to continue this agent's session when you take over.
+   * Placeholders: {session_id} {mcp_file} {worktree} {issue_key}. Empty = plain shell in the worktree.
+   */
+  resumeCommand?: string;
+  /** Regex with one capture group that finds the session id in the agent's output (Claude's stream-json is built in). */
+  sessionIdPattern?: string;
 }
 
 export interface ProjectConfig {
@@ -35,6 +42,8 @@ export interface Settings {
   pollIntervalMin: number;
   maxParallel: number;
   agentTimeoutMin: number;
+  /** Flag a running agent as slow (and notify) after this many minutes. */
+  slowAfterMin: number;
   paused: boolean;
   notifications: boolean;
   launchAtLogin: boolean;
@@ -46,9 +55,10 @@ export interface Config {
   projects: ProjectConfig[];
 }
 
-export type TicketStatus = "queued" | "running" | "pr_open" | "failed" | "stopped" | "done";
+/** "manual" = you took over; HandsFree leaves it alone until you hand it back. */
+export type TicketStatus = "queued" | "running" | "manual" | "pr_open" | "failed" | "stopped" | "done";
 
-export type AttemptOutcome = "success" | "exhausted" | "failed" | "no_changes" | "timeout" | "stopped";
+export type AttemptOutcome = "success" | "exhausted" | "failed" | "no_changes" | "timeout" | "stopped" | "taken_over";
 
 export interface Attempt {
   agentName: string;
@@ -75,6 +85,8 @@ export interface Ticket {
   currentAgent?: string;
   attempts: Attempt[];
   prUrl?: string;
+  /** Set while the current agent has run longer than settings.slowAfterMin. */
+  slow?: boolean;
   jiraCommented?: boolean;
   error?: string;
   createdAt: string;
@@ -98,7 +110,11 @@ export type EngineEvent =
   | { type: "state"; state: EngineState }
   | { type: "config"; config: Config }
   | { type: "log"; key: string; chunk: string }
-  | { type: "notify"; title: string; body: string; kind: "pr" | "fallback" | "failed" | "info" };
+  | { type: "notify"; title: string; body: string; kind: NotifyKind };
+
+export type NotifyKind = "pr" | "fallback" | "failed" | "slow" | "info";
+
+export const CLAUDE_RESUME = "claude --resume {session_id} --mcp-config {mcp_file}";
 
 export const DEFAULT_EXHAUSTION_PATTERNS = [
   "rate.?limit",
@@ -117,6 +133,7 @@ export const AGENT_PRESETS: Omit<AgentConfig, "id">[] = [
     command: "claude -p {prompt} --mcp-config {mcp_file} --output-format stream-json --verbose --dangerously-skip-permissions",
     enabled: true,
     exhaustionPatterns: DEFAULT_EXHAUSTION_PATTERNS,
+    resumeCommand: "claude --resume {session_id} --mcp-config {mcp_file}",
   },
   {
     name: "Grok",

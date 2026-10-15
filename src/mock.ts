@@ -24,6 +24,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
       pollIntervalMin: 15,
       maxParallel: 3,
       agentTimeoutMin: 90,
+      slowAfterMin: 30,
       paused: false,
       notifications: true,
       launchAtLogin: true,
@@ -97,8 +98,20 @@ function demoState(scenario: DemoOptions["scenario"]): EngineState {
       summary: "Add typing indicator to the visitor chat widget",
       status: "running",
       currentAgent: "Claude Code",
-      attempts: [{ agentName: "Claude Code", startedAt: ago(12) }],
-      createdAt: ago(13),
+      slow: true,
+      attempts: [{ agentName: "Claude Code", startedAt: ago(47), sessionId: "9b1e44d0-7a2c-4f5e-8d13-6c0a9f2e7b45" }],
+      createdAt: ago(48),
+    }),
+    t({
+      key: "CSW-1402",
+      projectId: "p1",
+      summary: "Agent can't attach files larger than 10 MB",
+      status: "manual",
+      attempts: [
+        { agentName: "Claude Code", startedAt: ago(95), endedAt: ago(70), exitCode: 1, outcome: "failed", note: "pnpm test failed", sessionId: "c2d7a9e3-1b4f-4e8a-a5d6-0f3b7c9e1a24" },
+      ],
+      createdAt: ago(96),
+      updatedAt: ago(8),
     }),
     t({
       key: "SET-982",
@@ -224,7 +237,22 @@ export function createMockApi(opts: DemoOptions): Api {
       emit({ type: "state", state });
     },
     getLog: async () => DEMO_LOG,
-    openTerminal: async () => ({ command: "claude --resume 3f9c2a71-5d0e-4b8a-9e61-2c7d4f0a8b13 --mcp-config .handsfree/mcp.json" }),
+    open: async (k) => {
+      const t = state.tickets[k];
+      if (t?.status === "running") return { command: "live view · press Enter in Terminal to take over" };
+      if (t && t.status !== "pr_open" && t.status !== "done") {
+        state = { ...state, tickets: { ...state.tickets, [k]: { ...t, status: "manual", slow: undefined, currentAgent: undefined } } };
+        emit({ type: "state", state });
+      }
+      return { command: "claude --resume '3f9c2a71-5d0e-4b8a-9e61-2c7d4f0a8b13' --mcp-config .handsfree/mcp.json" };
+    },
+    handBack: async (k) => {
+      const t = state.tickets[k];
+      if (t) {
+        state = { ...state, tickets: { ...state.tickets, [k]: { ...t, status: "queued" } } };
+        emit({ type: "state", state });
+      }
+    },
     testJira: async () => ({
       issues: [
         { key: "CSW-1425", summary: "Persist agent's last-used canned response" },

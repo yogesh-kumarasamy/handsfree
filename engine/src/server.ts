@@ -57,14 +57,22 @@ export function startServer(o: Orchestrator, port: number, token: string) {
     };
 
     try {
-      const m = url.pathname.match(/^\/api\/tickets\/([^/]+)\/(retry|stop|cleanup|forget|log|terminal)$/);
+      const m = url.pathname.match(/^\/api\/tickets\/([^/]+)\/(retry|stop|cleanup|forget|log|open|takeover|handback)$/);
       if (m) {
         const key = decodeURIComponent(m[1]);
         if (m[2] === "log") return send(200, { log: o.readLog(key) });
-        if (m[2] === "terminal") {
-          const { attempt } = await body<{ attempt?: number }>();
+        if (m[2] === "open" || m[2] === "takeover" || m[2] === "handback") {
+          const b = await body<{ mode?: string }>();
           try {
-            return send(200, await o.openTerminal(key, attempt));
+            if (m[2] === "open") return send(200, await o.open(key));
+            if (m[2] === "takeover") {
+              // Called from a live Terminal window: reply with just the resume command as text.
+              const r = await o.takeOver(key, false);
+              if (url.searchParams.get("text")) return void res.writeHead(200, { "content-type": "text/plain" }).end(r.resume);
+              return send(200, r);
+            }
+            await o.handBack(key, b.mode === "pr" ? "pr" : "agents");
+            return send(200, {});
           } catch (e) {
             return send(400, { error: (e as Error).message });
           }

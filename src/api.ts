@@ -27,8 +27,13 @@ export interface Api {
   cleanup(key: string): Promise<void>;
   forget(key: string): Promise<void>;
   getLog(key: string): Promise<string>;
-  /** Open Terminal in the worktree; resumes the attempt's Claude session when there is one. */
-  openTerminal(key: string, attempt?: number): Promise<{ command: string }>;
+  /**
+   * Open the ticket in Terminal, for any agent. Running → live output (Enter there = take over).
+   * Failed/stopped/yours → continue the agent's session right away.
+   */
+  open(key: string): Promise<{ command: string }>;
+  /** Give a taken-over ticket back: "pr" opens a PR with your changes, "agents" re-runs the chain. */
+  handBack(key: string, mode: "pr" | "agents"): Promise<void>;
   testJira(project: ProjectConfig): Promise<{ issues: FoundIssue[]; error?: string; raw?: string }>;
   repoInfo(path: string): Promise<RepoInfo>;
   doctor(): Promise<DoctorItem[]>;
@@ -64,6 +69,17 @@ function createHttpApi(base: string, token: string): Api {
     if (!res.ok) throw new Error(text || res.statusText);
     return (text ? JSON.parse(text) : undefined) as T;
   };
+  // POST that surfaces the engine's {"error": "..."} message as a plain Error.
+  const action = <T>(path: string, body: unknown): Promise<T> =>
+    call<T>(path, "POST", body).catch((e) => {
+      let msg = String((e as Error).message || e);
+      try {
+        msg = JSON.parse(msg).error || msg;
+      } catch {
+        /* plain text */
+      }
+      throw new Error(msg);
+    });
   return {
     getConfig: () => call("/api/config"),
     saveConfig: (cfg) => call("/api/config", "PUT", cfg),
@@ -76,17 +92,8 @@ function createHttpApi(base: string, token: string): Api {
     cleanup: (k) => call(`/api/tickets/${encodeURIComponent(k)}/cleanup`, "POST"),
     forget: (k) => call(`/api/tickets/${encodeURIComponent(k)}/forget`, "POST"),
     getLog: async (k) => (await call<{ log: string }>(`/api/tickets/${encodeURIComponent(k)}/log`)).log,
-    openTerminal: (k, attempt) =>
-      call<{ command: string }>(`/api/tickets/${encodeURIComponent(k)}/terminal`, "POST", { attempt }).catch((e) => {
-        // The engine answers errors as {"error": "..."}; surface just the message.
-        let msg = String((e as Error).message || e);
-        try {
-          msg = JSON.parse(msg).error || msg;
-        } catch {
-          /* plain text */
-        }
-        throw new Error(msg);
-      }),
+    open: (k) => action(`/api/tickets/${encodeURIComponent(k)}/open`, {}),
+    handBack: (k, mode) => action(`/api/tickets/${encodeURIComponent(k)}/handback`, { mode }),
     testJira: (project) => call("/api/test-jira", "POST", { project }),
     repoInfo: (path) => call("/api/repo-info", "POST", { path }),
     doctor: () => call("/api/doctor"),

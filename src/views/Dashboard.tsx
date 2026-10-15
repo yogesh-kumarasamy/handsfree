@@ -3,7 +3,7 @@ import type { Config, EngineState, ProjectConfig, Ticket, TicketStatus } from ".
 import { openExternal, type Api } from "../api";
 import { ago, duration, Icon, Logo, StatusBadge, until } from "../ui";
 
-const ORDER: TicketStatus[] = ["running", "queued", "failed", "stopped", "pr_open", "done"];
+const ORDER: TicketStatus[] = ["running", "manual", "failed", "stopped", "queued", "pr_open", "done"];
 
 export function Dashboard({
   api,
@@ -110,7 +110,12 @@ export function Dashboard({
                       <div className="key">{t.key}</div>
                       <div className="summary small muted">{t.summary}</div>
                     </td>
-                    <td><StatusBadge status={t.status} /></td>
+                    <td>
+                      <div className="row" style={{ gap: 6 }}>
+                        <StatusBadge status={t.status} />
+                        {t.slow && t.status === "running" && <span className="badge stopped" title="Running longer than your “slow” setting">⏱ slow</span>}
+                      </div>
+                    </td>
                     <td><Chain ticket={t} project={projects[t.projectId]} /></td>
                     <td className="small muted">{t.status === "running" && t.attempts.length ? duration(t.attempts[t.attempts.length - 1].startedAt) : ago(t.updatedAt)}</td>
                   </tr>
@@ -153,18 +158,23 @@ function TicketDetail({ api, ticket, project, onClose }: { api: Api; ticket: Tic
   const [term, setTerm] = useState<{ ok: boolean; text: string }>();
   const logRef = useRef<HTMLPreElement>(null);
 
-  const openTerminal = async (attempt?: number) => {
+  const run = async (fn: () => Promise<unknown>, ok?: (r: any) => string) => {
     try {
-      const r = await api.openTerminal(ticket.key, attempt);
-      setTerm({ ok: true, text: `Opened Terminal · ${r.command}` });
+      const r = await fn();
+      setTerm(ok ? { ok: true, text: ok(r) } : undefined);
     } catch (e) {
       setTerm({ ok: false, text: String((e as Error).message || e) });
     }
   };
-  const canResume = (i: number) => {
-    const a = ticket.attempts[i];
-    return !!a?.endedAt && (!!a.sessionId || /claude/i.test(a.agentName));
-  };
+  const open = () => run(() => api.open(ticket.key), (r) => `Opened Terminal · ${r.command}`);
+  const openLabel =
+    ticket.status === "running" ? "👀 Open live" : ticket.status === "manual" ? "⌨ Reopen session" : ticket.status === "pr_open" ? "⌨ Open in Terminal" : "⌨ Take over";
+  const openHint =
+    ticket.status === "running"
+      ? "See the agent working in Terminal. Press Enter there to take over and talk to it."
+      : ticket.status === "pr_open"
+        ? "Open the worktree and the last agent session in Terminal"
+        : "Continue the last agent's session in Terminal, in this ticket's worktree";
 
   useEffect(() => {
     let alive = true;
@@ -188,6 +198,7 @@ function TicketDetail({ api, ticket, project, onClose }: { api: Api; ticket: Tic
     !o ? { bg: "var(--blue-soft)", fg: "var(--blue)", ch: "•" }
     : o === "success" ? { bg: "var(--accent-soft)", fg: "var(--accent)", ch: "✓" }
     : o === "exhausted" ? { bg: "var(--amber-soft)", fg: "var(--amber)", ch: "↪" }
+    : o === "taken_over" ? { bg: "var(--amber-soft)", fg: "var(--amber)", ch: "✋" }
     : { bg: "var(--red-soft)", fg: "var(--red)", ch: "✕" };
 
   const outcomeText: Record<string, string> = {
@@ -197,6 +208,7 @@ function TicketDetail({ api, ticket, project, onClose }: { api: Api; ticket: Tic
     no_changes: "No changes made",
     timeout: "Timed out",
     stopped: "Stopped by you",
+    taken_over: "You took over",
   };
 
   return (
@@ -214,19 +226,15 @@ function TicketDetail({ api, ticket, project, onClose }: { api: Api; ticket: Tic
             <button className="btn sm primary" onClick={() => openExternal(ticket.prUrl!)}>Open draft PR ↗</button>
           )}
           {ticket.status !== "done" && (
-            <button
-              className="btn sm"
-              onClick={() => openTerminal()}
-              title={ticket.status === "running" ? "Plain shell in the worktree (the agent is still running)" : "Resume the last agent session in Terminal"}
-            >
-              ⌨ Open in Terminal
+            <button className={`btn sm ${ticket.status === "failed" || ticket.slow ? "primary" : ""}`} onClick={open} title={openHint}>
+              {openLabel}
             </button>
           )}
           {ticket.status === "running" && <button className="btn sm danger" onClick={() => api.stop(ticket.key)}>Stop</button>}
           {(ticket.status === "failed" || ticket.status === "stopped") && (
-            <button className="btn sm primary" onClick={() => api.retry(ticket.key)}>Retry chain</button>
+            <button className="btn sm" onClick={() => api.retry(ticket.key)}>Retry chain</button>
           )}
-          {ticket.status !== "running" && ticket.status !== "done" && (
+          {ticket.status !== "running" && ticket.status !== "done" && ticket.status !== "manual" && (
             <button className="btn sm" onClick={() => api.cleanup(ticket.key)}>Clean up worktree</button>
           )}
           {ticket.status !== "running" && (
@@ -242,6 +250,26 @@ function TicketDetail({ api, ticket, project, onClose }: { api: Api; ticket: Tic
           <dt>Jira</dt><dd>{ticket.jiraCommented ? "PR link commented ✓" : ticket.prUrl ? "Comment pending" : "—"}</dd>
         </dl>
 
+        {ticket.status === "manual" && (
+          <div className="callout warn" style={{ flexDirection: "column", gap: 8 }}>
+            <span className="t">
+              <b>You have this ticket.</b> HandsFree won't touch it until you hand it back.
+            </span>
+            <div className="row" style={{ flexWrap: "wrap" }}>
+              <button className="btn sm primary" onClick={() => run(() => api.handBack(ticket.key, "pr"))} title="Commit what's in the worktree, push, open a draft PR and comment on Jira">
+                Open PR with my changes
+              </button>
+              <button className="btn sm" onClick={() => run(() => api.handBack(ticket.key, "agents"))} title="Run the agent chain again; agents are told you changed things">
+                Hand back to agents
+              </button>
+            </div>
+          </div>
+        )}
+        {ticket.slow && ticket.status === "running" && (
+          <div className="callout warn">
+            <span className="t">⏱ This is taking longer than usual. Open it live to see what the agent is doing, and press Enter there if you want to step in.</span>
+          </div>
+        )}
         {ticket.error && <div className="callout err"><span className="t">{ticket.error}</span></div>}
         {term && (
           <div className={`callout ${term.ok ? "ok" : "err"}`}>
@@ -266,14 +294,7 @@ function TicketDetail({ api, ticket, project, onClose }: { api: Api; ticket: Tic
                       {a.note ? ` · ${a.note}` : ""}
                     </div>
                   </div>
-                  <div className="row" style={{ gap: 6 }}>
-                    {canResume(i) && ticket.status !== "done" && (
-                      <button className="btn ghost sm" onClick={() => openTerminal(i)} title={a.sessionId ? `claude --resume ${a.sessionId}` : "claude --continue in the worktree"}>
-                        Resume ↗
-                      </button>
-                    )}
-                    <span className="small faint">{duration(a.startedAt, a.endedAt)}</span>
-                  </div>
+                  <span className="small faint">{duration(a.startedAt, a.endedAt)}</span>
                 </div>
               );
             })}

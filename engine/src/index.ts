@@ -10,6 +10,7 @@ async function main() {
   const port = Number(process.env.HF_PORT || 47821);
   const token = process.env.HF_TOKEN || crypto.randomBytes(16).toString("hex");
   const o = new Orchestrator();
+  o.api = { port, token };
   const server = startServer(o, port, token);
   o.start();
   console.log(`[handsfree] engine on http://127.0.0.1:${port} · data ${DATA_DIR}${process.env.HF_TOKEN ? "" : ` · token ${token}`}`);

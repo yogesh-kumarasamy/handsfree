@@ -371,6 +371,21 @@ function ProjectEditor({
                     <textarea className="textarea code" rows={4} style={{ marginTop: 8 }} value={a.exhaustionPatterns.join("\n")} onChange={(e) => setAgent(a.id, { exhaustionPatterns: e.target.value.split("\n").filter((x) => x.trim()) })} />
                     <span className="hint small muted">One regex per line, matched against the end of the agent's output.</span>
                   </details>
+                  <details style={{ marginTop: 6 }}>
+                    <summary className="small muted" style={{ cursor: "pointer" }}>
+                      Take over {a.resumeCommand?.trim() ? "· resumes the session" : "· opens a shell"}
+                    </summary>
+                    <div className="field" style={{ marginTop: 8, marginBottom: 8 }}>
+                      <label className="small">Resume command</label>
+                      <input className="input code" value={a.resumeCommand || ""} placeholder="e.g. mytool resume {session_id}" onChange={(e) => setAgent(a.id, { resumeCommand: e.target.value })} />
+                      <span className="hint">Interactive command that continues this agent's session when you take over. Placeholders: <span className="mono">{"{session_id} {mcp_file} {worktree} {issue_key}"}</span>. Leave empty to get a shell in the worktree.</span>
+                    </div>
+                    <div className="field" style={{ marginBottom: 0 }}>
+                      <label className="small">Session ID pattern</label>
+                      <input className="input code" value={a.sessionIdPattern || ""} placeholder="e.g. session[:\s]+([\w-]+)" onChange={(e) => setAgent(a.id, { sessionIdPattern: e.target.value })} />
+                      <span className="hint">Regex with one group that finds the session ID in the agent's output. Claude's is built in.</span>
+                    </div>
+                  </details>
                 </div>
                 <div className="agent-controls">
                   <Toggle on={a.enabled} onChange={(v) => setAgent(a.id, { enabled: v })} />

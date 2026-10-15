@@ -45,6 +45,8 @@ case "$1 $2" in
 esac`);
 // stand-in for macOS `open`: keep a copy of the Terminal launcher so the test can read it
 script("fakeopen", `cp "$1" "${root}/opened.command"`);
+// a non-Claude agent that prints its session id and keeps working (for watch / take over)
+script("fakeslow", `echo "SESSION: abc-12345678"; echo "thinking…"; sleep 60`);
 // agent 1: edits a file, then dies on a rate limit
 script("fakegrok", `echo "working on $HANDSFREE_ISSUE"; echo "partial" > partial.txt; echo "Error: 429 rate limit exceeded" >&2; exit 1`);
 // agent 2: sees the previous work, commits
@@ -132,17 +134,16 @@ try {
   assert.doesNotMatch(log, /"type":"assistant"/, "raw JSON hidden");
   assert.match(fs.readFileSync(path.join(root, "prs.log"), "utf8"), /--draft/);
 
-  // Claude's session id is recorded, and "Open in Terminal" resumes exactly that session
+  // Claude's session id is recorded, and "Open" resumes exactly that session
   assert.equal(t1.attempts[1].sessionId, "sess-1234-abcd");
-  const term = await api("/api/tickets/DEMO-1/terminal", "POST", {});
-  assert.equal(term.command, "claude --resume 'sess-1234-abcd' --mcp-config .handsfree/mcp.json");
+  const term = await api("/api/tickets/DEMO-1/open", "POST", {});
+  const mcpAbs = path.join(wt, ".handsfree", "mcp.json");
+  assert.equal(term.command, `claude --resume 'sess-1234-abcd' --mcp-config '${mcpAbs}'`);
   const launcher = fs.readFileSync(path.join(root, "opened.command"), "utf8");
   assert.match(launcher, new RegExp(`cd '${wt}'`));
-  assert.match(launcher, /\nclaude --resume 'sess-1234-abcd' --mcp-config \.handsfree\/mcp\.json\n/);
+  assert.ok(launcher.includes(`\nclaude --resume 'sess-1234-abcd' --mcp-config '${mcpAbs}'\n`));
   assert.match(launcher, /git status --short/);
-  // Grok has no session → plain shell in the worktree
-  const term0 = await api("/api/tickets/DEMO-1/terminal", "POST", { attempt: 0 });
-  assert.match(term0.command, /^cd '/);
+  assert.equal((await api("/api/state")).tickets["DEMO-1"].status, "pr_open", "opening a PR'd ticket doesn't take it over");
 
   // maxParallel=1 → DEMO-2 runs after DEMO-1
   await waitFor(async () => (await api("/api/state")).tickets["DEMO-2"]?.status === "pr_open", "DEMO-2 pr_open");
@@ -165,6 +166,55 @@ try {
   await api("/api/tickets/DEMO-2/forget", "POST");
   await api("/api/poll-now", "POST");
   await waitFor(async () => (await api("/api/state")).tickets["DEMO-2"]?.status === "failed", "DEMO-2 failed");
+
+  // ---- Watch live + take over, with a non-Claude agent (any tool works) ----
+  project.agents = [
+    { id: "s", name: "Sleepy", command: "fakeslow", enabled: true, exhaustionPatterns: [], resumeCommand: "fakeslow --resume {session_id}", sessionIdPattern: "SESSION: ([\\w-]+)" },
+  ];
+  const cfg2 = await api("/api/config");
+  await api("/api/config", "PUT", { ...cfg2, settings: { ...cfg2.settings, slowAfterMin: 0 }, projects: [project] });
+  await api("/api/tickets/DEMO-2/forget", "POST");
+  await api("/api/poll-now", "POST");
+  const running = await waitFor(async () => {
+    const t = (await api("/api/state")).tickets["DEMO-2"];
+    return t?.status === "running" && t.attempts[0]?.sessionId && t;
+  }, "DEMO-2 running with a session id");
+  assert.equal(running.attempts[0].sessionId, "abc-12345678", "session id found with the agent's own pattern");
+
+  // slow flag (slowAfterMin = 0 → first heartbeat)
+  await waitFor(async () => (await api("/api/state")).tickets["DEMO-2"].slow === true, "slow flag", 20000);
+
+  // Open while running → live view whose Enter key calls back to take over
+  const live = await api("/api/tickets/DEMO-2/open", "POST", {});
+  assert.match(live.command, /live view/);
+  const liveScript = fs.readFileSync(path.join(root, "opened.command"), "utf8");
+  assert.match(liveScript, /tail -n 200 -f /);
+  assert.match(liveScript, /read -r _/);
+  assert.ok(liveScript.includes(`/api/tickets/DEMO-2/takeover?text=1`) && liveScript.includes(`x-handsfree-token: ${token}`));
+  assert.equal((await api("/api/state")).tickets["DEMO-2"].status, "running", "watching doesn't interrupt");
+
+  // Pressing Enter → takeover returns the agent's own resume command as text
+  const tr = await fetch(`${base}/api/tickets/DEMO-2/takeover?text=1`, { method: "POST", headers: { "x-handsfree-token": token } });
+  assert.equal(await tr.text(), "fakeslow --resume 'abc-12345678'");
+  const taken = (await api("/api/state")).tickets["DEMO-2"];
+  assert.equal(taken.status, "manual");
+  assert.equal(taken.attempts[0].outcome, "taken_over");
+  assert.ok(!taken.slow);
+
+  // Nothing changed yet → "Open PR with my changes" explains why it can't
+  const noChanges = await api("/api/tickets/DEMO-2/handback", "POST", { mode: "pr" });
+  assert.match(noChanges.error, /no changes/);
+
+  // You edit in the worktree, then hand back with a PR (agents are not re-run)
+  const wt2 = path.join(repo, ".worktrees", "DEMO-2");
+  fs.writeFileSync(path.join(wt2, "fix.txt"), "done by hand\n");
+  await api("/api/tickets/DEMO-2/handback", "POST", { mode: "pr" });
+  const handed = await waitFor(async () => {
+    const t = (await api("/api/state")).tickets["DEMO-2"];
+    return t.status === "pr_open" && t;
+  }, "DEMO-2 pr_open after hand back");
+  assert.deepEqual(handed.attempts.map((a) => [a.agentName, a.outcome]), [["Sleepy", "taken_over"], ["You", "success"]]);
+  assert.match(sh(`git log --oneline main..handsfree/DEMO-2`, remote), /DEMO-2/, "your change was committed and pushed");
 
   const doc = await api("/api/doctor");
   assert.ok(doc.find((d) => d.name === "gh").ok);
