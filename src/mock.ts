@@ -1,11 +1,13 @@
 import type { Api, DemoOptions } from "./api";
 import {
   AGENT_PRESETS,
+  PR_STATUSES,
   DEFAULT_JIRA_COMMENT,
   DEFAULT_JIRA_SEARCH,
   type Config,
   type EngineEvent,
   type EngineState,
+  type PrInfo,
   type Ticket,
 } from "../engine/src/types";
 
@@ -22,8 +24,10 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
     version: 1,
     settings: {
       pollIntervalMin: 15,
+      prPollIntervalMin: 3,
       maxParallel: 3,
       agentTimeoutMin: 90,
+      slowAfterMin: 30,
       paused: false,
       notifications: true,
       launchAtLogin: true,
@@ -55,6 +59,9 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
               agents: agents(["Claude Code", "Grok", "Antigravity"]),
               promptExtra: "Use pnpm. Run `pnpm test` and `pnpm lint` before committing.",
               draftPr: true,
+              ciAutoFix: true,
+              ciFixMaxRounds: 2,
+              mergeNudgeAfterMin: 30,
             },
             {
               id: "p2",
@@ -70,6 +77,9 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
               agents: agents(["Grok", "Claude Code"]),
               promptExtra: "",
               draftPr: true,
+              ciAutoFix: true,
+              ciFixMaxRounds: 2,
+              mergeNudgeAfterMin: 30,
             },
           ],
   };
@@ -88,8 +98,22 @@ function t(p: Partial<Ticket> & Pick<Ticket, "key" | "projectId" | "summary" | "
   };
 }
 
+const pr = (number: number, repo: string, over: Partial<PrInfo> = {}): PrInfo => ({
+  url: `https://github.com/anywhere/${repo}/pull/${number}`,
+  number,
+  draft: false,
+  state: "open",
+  headSha: "9f3c2a1b7e",
+  ci: "passing",
+  failedChecks: [],
+  reviewDecision: "",
+  fixRounds: 0,
+  checkedAt: ago(2),
+  ...over,
+});
+
 function demoState(scenario: DemoOptions["scenario"]): EngineState {
-  if (scenario === "empty") return { tickets: {}, pollErrors: {} };
+  if (scenario === "empty") return { tickets: {}, pollErrors: {}, prCheckErrors: {} };
   const list: Ticket[] = [
     t({
       key: "CSW-1421",
@@ -97,8 +121,20 @@ function demoState(scenario: DemoOptions["scenario"]): EngineState {
       summary: "Add typing indicator to the visitor chat widget",
       status: "running",
       currentAgent: "Claude Code",
-      attempts: [{ agentName: "Claude Code", startedAt: ago(12) }],
-      createdAt: ago(13),
+      slow: true,
+      attempts: [{ agentName: "Claude Code", startedAt: ago(47), sessionId: "9b1e44d0-7a2c-4f5e-8d13-6c0a9f2e7b45" }],
+      createdAt: ago(48),
+    }),
+    t({
+      key: "CSW-1402",
+      projectId: "p1",
+      summary: "Agent can't attach files larger than 10 MB",
+      status: "manual",
+      attempts: [
+        { agentName: "Claude Code", startedAt: ago(95), endedAt: ago(70), exitCode: 1, outcome: "failed", note: "pnpm test failed", sessionId: "c2d7a9e3-1b4f-4e8a-a5d6-0f3b7c9e1a24" },
+      ],
+      createdAt: ago(96),
+      updatedAt: ago(8),
     }),
     t({
       key: "SET-982",
@@ -118,8 +154,9 @@ function demoState(scenario: DemoOptions["scenario"]): EngineState {
       key: "CSW-1398",
       projectId: "p1",
       summary: "Fix unread badge not clearing on mobile Safari",
-      status: "pr_open",
+      status: "pr_draft",
       prUrl: "https://github.com/anywhere/chatsupport-web/pull/2211",
+      pr: pr(2211, "chatsupport-web", { draft: true, ci: "pending" }),
       jiraCommented: true,
       attempts: [{ agentName: "Claude Code", startedAt: ago(190), endedAt: ago(151), exitCode: 0, outcome: "success" }],
       createdAt: ago(191),
@@ -129,12 +166,42 @@ function demoState(scenario: DemoOptions["scenario"]): EngineState {
       key: "SET-975",
       projectId: "p2",
       summary: "Add pagination to GET /v2/customers",
-      status: "pr_open",
+      status: "pr_ci_failed",
       prUrl: "https://github.com/anywhere/setmore-api/pull/877",
+      pr: pr(877, "setmore-api", { ci: "failing", fixRounds: 2, lastFixSha: "9f3c2a1b7e", failedChecks: [{ name: "unit tests", detailsUrl: "https://github.com/anywhere/setmore-api/actions/runs/771/job/1", runId: "771" }] }),
+      error: "Every agent in the chain failed. Check the log, then Retry.",
       jiraCommented: true,
       attempts: [{ agentName: "Grok", startedAt: ago(260), endedAt: ago(232), exitCode: 0, outcome: "success" }],
       createdAt: ago(261),
       updatedAt: ago(231),
+    }),
+    t({
+      key: "CSW-1411",
+      projectId: "p1",
+      summary: "Rate-limit the public widget endpoint",
+      status: "running",
+      currentAgent: "Claude Code",
+      prUrl: "https://github.com/anywhere/chatsupport-web/pull/2204",
+      jiraCommented: true,
+      pr: pr(2204, "chatsupport-web", { ci: "failing", lastFixSha: "9f3c2a1b7e", failedChecks: [{ name: "lint", runId: "802" }] }),
+      fix: { round: 1, headSha: "9f3c2a1b7e", failedChecks: [{ name: "lint", runId: "802" }], logs: "", requestedAt: ago(6) },
+      attempts: [
+        { agentName: "Claude Code", startedAt: ago(130), endedAt: ago(100), exitCode: 0, outcome: "success" },
+        { agentName: "Claude Code", startedAt: ago(5) },
+      ],
+      createdAt: ago(131),
+    }),
+    t({
+      key: "CSW-1385",
+      projectId: "p1",
+      summary: "Export conversations as CSV",
+      status: "pr_approved",
+      prUrl: "https://github.com/anywhere/chatsupport-web/pull/2199",
+      jiraCommented: true,
+      pr: pr(2199, "chatsupport-web", { reviewDecision: "APPROVED", approvedAt: ago(48), mergeNudgedAt: ago(18) }),
+      attempts: [{ agentName: "Claude Code", startedAt: ago(400), endedAt: ago(360), exitCode: 0, outcome: "success" }],
+      createdAt: ago(401),
+      updatedAt: ago(48),
     }),
     t({
       key: "CSW-1390",
@@ -143,7 +210,7 @@ function demoState(scenario: DemoOptions["scenario"]): EngineState {
       status: "failed",
       error: "All agents failed",
       attempts: [
-        { agentName: "Claude Code", startedAt: ago(320), endedAt: ago(300), exitCode: 0, outcome: "no_changes", note: "Exited without changes" },
+        { agentName: "Claude Code", startedAt: ago(320), endedAt: ago(300), exitCode: 0, outcome: "no_changes", note: "Exited without changes", sessionId: "3f9c2a71-5d0e-4b8a-9e61-2c7d4f0a8b13" },
         { agentName: "Grok", startedAt: ago(300), endedAt: ago(270), exitCode: 2, outcome: "failed" },
       ],
       createdAt: ago(321),
@@ -153,8 +220,9 @@ function demoState(scenario: DemoOptions["scenario"]): EngineState {
       key: "CSW-1377",
       projectId: "p1",
       summary: "Sanitize HTML in agent notes",
-      status: "done",
+      status: "merged",
       prUrl: "https://github.com/anywhere/chatsupport-web/pull/2190",
+      pr: pr(2190, "chatsupport-web", { state: "merged", mergedAt: ago(400), reviewDecision: "APPROVED", approvedAt: ago(460) }),
       jiraCommented: true,
       attempts: [{ agentName: "Claude Code", startedAt: ago(1500), endedAt: ago(1460), exitCode: 0, outcome: "success" }],
       createdAt: ago(1501),
@@ -164,8 +232,11 @@ function demoState(scenario: DemoOptions["scenario"]): EngineState {
   return {
     tickets: Object.fromEntries(list.map((x) => [x.key, x])),
     lastPollAt: ago(6),
+    lastPrCheckAt: ago(2),
+    nextPrCheckAt: new Date(Date.now() + 60_000).toISOString(),
     nextPollAt: new Date(Date.now() + 9 * 60_000).toISOString(),
     pollErrors: {},
+    prCheckErrors: {},
   };
 }
 
@@ -215,6 +286,15 @@ export function createMockApi(opts: DemoOptions): Api {
       emit({ type: "config", config });
     },
     pollNow: ok,
+    checkPrsNow: ok,
+    publish: async (k) => {
+      const t = state.tickets[k];
+      if (t?.pr) {
+        state = { ...state, tickets: { ...state.tickets, [k]: { ...t, status: "pr_ready", pr: { ...t.pr, draft: false } } } };
+        emit({ type: "state", state });
+      }
+    },
+    fixCi: ok,
     retry: ok,
     stop: ok,
     cleanup: ok,
@@ -224,6 +304,22 @@ export function createMockApi(opts: DemoOptions): Api {
       emit({ type: "state", state });
     },
     getLog: async () => DEMO_LOG,
+    open: async (k) => {
+      const t = state.tickets[k];
+      if (t?.status === "running") return { command: "live view · press Enter in Terminal to take over" };
+      if (t && !PR_STATUSES.includes(t.status) && t.status !== "merged" && t.status !== "done") {
+        state = { ...state, tickets: { ...state.tickets, [k]: { ...t, status: "manual", slow: undefined, currentAgent: undefined } } };
+        emit({ type: "state", state });
+      }
+      return { command: "claude --resume '3f9c2a71-5d0e-4b8a-9e61-2c7d4f0a8b13' --mcp-config .handsfree/mcp.json" };
+    },
+    handBack: async (k) => {
+      const t = state.tickets[k];
+      if (t) {
+        state = { ...state, tickets: { ...state.tickets, [k]: { ...t, status: "queued" } } };
+        emit({ type: "state", state });
+      }
+    },
     testJira: async () => ({
       issues: [
         { key: "CSW-1425", summary: "Persist agent's last-used canned response" },

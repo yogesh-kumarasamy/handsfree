@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Config, EngineState } from "../engine/src/types";
 import { getApi, notify, onTrayTogglePause, type Api } from "./api";
-import { Icon, Logo, until } from "./ui";
+import { Icon, Logo, until, useTick } from "./ui";
 import { Dashboard } from "./views/Dashboard";
 import { Projects } from "./views/Projects";
 import { SettingsView } from "./views/Settings";
@@ -19,22 +19,39 @@ export default function App() {
     demo?.editorNew ? "new" : demo?.editorStep !== undefined ? "p1" : null,
   );
 
+  const [gen, setGen] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string>();
+  useTick();
+
+  // Bumping `gen` (the Refresh button) tears down the event stream, refetches, and resubscribes.
   useEffect(() => {
     let unsub = () => {};
+    let alive = true;
+    setRefreshing(true);
+    setRefreshError(undefined);
     getApi()
       .then(async (a) => {
         setApi(a);
-        setConfig(await a.getConfig());
-        setState(await a.getState());
+        const [c, s] = await Promise.all([a.getConfig(), a.getState()]);
+        if (!alive) return;
+        setConfig(c);
+        setState(s);
+        setError(undefined);
         unsub = a.subscribe((e) => {
           if (e.type === "state") setState(e.state);
           if (e.type === "config") setConfig(e.config);
           if (e.type === "notify") void notifyIfEnabled(e.title, e.body);
         });
       })
-      .catch((e) => setError(String(e?.message || e)));
-    return () => unsub();
-  }, []);
+      // The first load failing means the engine is down: full-screen error. A later Refresh failing is shown inline.
+      .catch((e) => (gen === 0 ? setError(String(e?.message || e)) : setRefreshError(String(e?.message || e))))
+      .finally(() => setRefreshing(false));
+    return () => {
+      alive = false;
+      unsub();
+    };
+  }, [gen]);
 
   // Read the latest notification setting without re-subscribing.
   const notifyIfEnabled = async (title: string, body: string) => {
@@ -111,12 +128,18 @@ export default function App() {
             {paused
               ? "Running agents finish; no new tickets."
               : active
-                ? `Next check ${until(state.nextPollAt)}`
+                ? `Next check ${until(state.nextPollAt)}${state.nextPrCheckAt ? ` · PRs ${until(state.nextPrCheckAt)}` : ""}`
                 : "Add a project to start"}
           </div>
-          <button className="btn sm" onClick={togglePause}>
-            {paused ? Icon.play : Icon.pause} {paused ? "Resume" : "Pause"}
-          </button>
+          {refreshError && <div className="engine-sub err-text" title={refreshError}>Refresh failed: {refreshError.slice(0, 60)}</div>}
+          <div className="row" style={{ gap: 6 }}>
+            <button className="btn sm" onClick={togglePause}>
+              {paused ? Icon.play : Icon.pause} {paused ? "Resume" : "Pause"}
+            </button>
+            <button className="btn sm ghost" onClick={() => setGen((g) => g + 1)} disabled={refreshing} title="Reload config and state from the engine">
+              <span className={refreshing ? "spin" : ""}>{Icon.refresh}</span> Refresh
+            </button>
+          </div>
         </div>
       </aside>
 

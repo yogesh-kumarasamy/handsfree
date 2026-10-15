@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { Config, EngineState, ProjectConfig, Settings } from "./types";
+import { CLAUDE_RESUME, type Config, type EngineState, type ProjectConfig, type Settings } from "./types";
 
 export const DATA_DIR =
   process.env.HF_DATA ||
@@ -17,8 +17,10 @@ fs.mkdirSync(LOG_DIR, { recursive: true });
 
 export const DEFAULT_SETTINGS: Settings = {
   pollIntervalMin: 15,
+  prPollIntervalMin: 3,
   maxParallel: 2,
   agentTimeoutMin: 90,
+  slowAfterMin: 30,
   paused: false,
   notifications: true,
   launchAtLogin: false,
@@ -56,10 +58,21 @@ export function normalizeProject(p: Partial<ProjectConfig>): ProjectConfig {
       command: a.command || "",
       enabled: a.enabled ?? true,
       exhaustionPatterns: a.exhaustionPatterns || [],
+      // Older Claude agents had no resume command; give them the standard one.
+      resumeCommand: a.resumeCommand ?? (/^\s*claude\b/.test(a.command || "") ? CLAUDE_RESUME : ""),
+      sessionIdPattern: a.sessionIdPattern || "",
     })),
     promptExtra: p.promptExtra || "",
     draftPr: p.draftPr ?? true,
+    ciAutoFix: p.ciAutoFix ?? true,
+    ciFixMaxRounds: clamp(p.ciFixMaxRounds, 0, 5, 2),
+    mergeNudgeAfterMin: clamp(p.mergeNudgeAfterMin, 5, 1440, 30),
   };
+}
+
+function clamp(v: unknown, min: number, max: number, dflt: number) {
+  const n = Number(v);
+  return Number.isFinite(n) && v !== null && v !== undefined && v !== "" ? Math.min(max, Math.max(min, Math.round(n))) : dflt;
 }
 
 export function loadConfig(): Config {
@@ -75,9 +88,29 @@ export function saveConfig(cfg: Config) {
   writeJsonAtomic(CONFIG_FILE, cfg);
 }
 
-export function loadState(): EngineState {
-  const raw = readJson<Partial<EngineState>>(STATE_FILE);
-  return { tickets: raw?.tickets || {}, pollErrors: raw?.pollErrors || {}, lastPollAt: raw?.lastPollAt };
+/** Upgrade a state file from an older HandsFree. Exported for tests. */
+export function migrateState(raw: Partial<EngineState> | undefined, cfg: Config): EngineState {
+  const tickets = raw?.tickets || {};
+  for (const t of Object.values(tickets)) {
+    // 0.1 had a single "pr_open"; the first PR check will set the exact status.
+    if ((t.status as string) === "pr_open") {
+      const p = cfg.projects.find((x) => x.id === t.projectId);
+      t.status = p && p.draftPr === false ? "pr_ready" : "pr_draft";
+    }
+  }
+  return {
+    tickets,
+    pollErrors: raw?.pollErrors || {},
+    prCheckErrors: raw?.prCheckErrors || {},
+    lastPollAt: raw?.lastPollAt,
+    nextPollAt: raw?.nextPollAt,
+    lastPrCheckAt: raw?.lastPrCheckAt,
+    nextPrCheckAt: raw?.nextPrCheckAt,
+  };
+}
+
+export function loadState(cfg: Config): EngineState {
+  return migrateState(readJson<Partial<EngineState>>(STATE_FILE), cfg);
 }
 
 export function saveState(state: EngineState) {

@@ -1,4 +1,14 @@
-import type { TicketStatus } from "../engine/src/types";
+import { useEffect, useState } from "react";
+import type { CiStatus, PrInfo, TicketStatus } from "../engine/src/types";
+
+/** Re-render the caller every `ms`, so relative times ("in 11 min", "3 min ago") stay current. */
+export function useTick(ms = 15_000) {
+  const [, setN] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setN((n) => n + 1), ms);
+    return () => clearInterval(id);
+  }, [ms]);
+}
 
 export function Logo({ size = 30 }: { size?: number }) {
   // Calm mark: a quiet path (you walk) and a moving dot (it runs).
@@ -35,19 +45,38 @@ export function Toggle({ on, onChange, title }: { on: boolean; onChange: (v: boo
 const LABEL: Record<TicketStatus, string> = {
   queued: "Queued",
   running: "Running",
-  pr_open: "PR open",
+  manual: "With you",
   failed: "Failed",
   stopped: "Stopped",
-  done: "Done",
+  pr_draft: "Draft PR",
+  pr_ready: "Ready for review",
+  pr_ci_failed: "CI failing",
+  pr_approved: "Approved",
+  merged: "Merged",
+  done: "Closed",
 };
 
-export function StatusBadge({ status }: { status: TicketStatus }) {
+export function StatusBadge({ status, label }: { status: TicketStatus; label?: string }) {
   return (
     <span className={`badge ${status}`}>
       <span className={`dot ${status === "running" ? "pulse" : ""}`} />
-      {LABEL[status]}
+      {label || LABEL[status]}
     </span>
   );
+}
+
+export function CiPill({ ci }: { ci?: CiStatus }) {
+  if (!ci || ci === "none") return <span className="pill faint">no CI</span>;
+  const cls = ci === "passing" ? "ok" : ci === "failing" ? "bad" : "wait";
+  const text = ci === "passing" ? "CI ✓" : ci === "failing" ? "CI ✕" : "CI …";
+  return <span className={`pill ${cls}`}>{text}</span>;
+}
+
+export function ReviewPill({ decision }: { decision?: PrInfo["reviewDecision"] }) {
+  if (!decision) return <span className="pill faint">no review</span>;
+  const cls = decision === "APPROVED" ? "ok" : decision === "CHANGES_REQUESTED" ? "bad" : "wait";
+  const text = decision === "APPROVED" ? "Approved" : decision === "CHANGES_REQUESTED" ? "Changes requested" : "Review needed";
+  return <span className={`pill ${cls}`}>{text}</span>;
 }
 
 export function ago(iso?: string) {

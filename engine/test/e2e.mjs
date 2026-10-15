@@ -40,13 +40,22 @@ script("gh", `
 case "$1 $2" in
   "pr list") echo "" ;;
   "pr create") n=$(cat "${root}/prn" 2>/dev/null || echo 100); n=$((n+1)); echo $n > "${root}/prn"; echo "$@" >> "${root}/prs.log"; echo "https://github.com/acme/repo/pull/$n" ;;
-  "pr view") cat "${root}/prstate" 2>/dev/null || echo OPEN ;;
+  "pr view") n="\${3##*/}"; cat "${root}/pr-$n.json" 2>/dev/null || echo "{\\"number\\":$n,\\"url\\":\\"https://github.com/acme/repo/pull/$n\\",\\"state\\":\\"OPEN\\",\\"isDraft\\":true,\\"headRefOid\\":\\"aaa111\\",\\"mergedAt\\":null,\\"reviewDecision\\":\\"\\",\\"latestReviews\\":[],\\"statusCheckRollup\\":[]}" ;;
+  "pr ready") echo "$@" >> "${root}/ready.log" ;;
+  "run view") echo "$@" >> "${root}/runs.log"; echo "Run $3 ▸ job test"; echo "FAIL tests/greeting.test.js: expected hi, got hello" ;;
   "auth status") echo "Logged in to github.com as tester"; exit 0 ;;
 esac`);
+// stand-in for macOS `open`: keep a copy of the Terminal launcher so the test can read it
+script("fakeopen", `cp "$1" "${root}/opened.command"`);
+// a non-Claude agent that prints its session id and keeps working (for watch / take over)
+script("fakeslow", `echo "SESSION: abc-12345678"; echo "thinking…"; sleep 60`);
 // agent 1: edits a file, then dies on a rate limit
 script("fakegrok", `echo "working on $HANDSFREE_ISSUE"; echo "partial" > partial.txt; echo "Error: 429 rate limit exceeded" >&2; exit 1`);
 // agent 2: sees the previous work, commits
-script("fakeclaude", `test -f "$2" || exit 9; grep -q "Previous attempts" "$2" && echo "saw previous attempt"; test -f "$4" || exit 8; echo "hi" >> README.md; git add -A; git commit -qm "$HANDSFREE_ISSUE: greeting"; echo "Summary: added greeting"`);
+script("fakeclaude", `test -f "$2" || exit 9; grep -q "Previous attempts" "$2" && echo "saw previous attempt"; grep -q "expected hi, got hello" "$2" && echo "saw ci logs"; test -f "$4" || exit 8; echo "hi" >> README.md; git add -A; git commit -qm "$HANDSFREE_ISSUE: greeting"
+echo '{"type":"system","subtype":"init","session_id":"sess-1234-abcd","model":"claude-test","mcp_servers":[{"name":"github","status":"connected"}]}'
+echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"pnpm test"}}]}}'
+echo '{"type":"result","subtype":"success","is_error":false,"num_turns":3,"total_cost_usd":0.12,"result":"Summary: added greeting"}'`);
 
 const project = {
   id: "p1",
@@ -66,12 +75,12 @@ const project = {
   promptExtra: "Be nice.",
   draftPr: true,
 };
-fs.writeFileSync(path.join(data, "config.json"), JSON.stringify({ version: 1, settings: { pollIntervalMin: 60, maxParallel: 1, agentTimeoutMin: 5, paused: false, notifications: true, launchAtLogin: false }, projects: [project] }));
+fs.writeFileSync(path.join(data, "config.json"), JSON.stringify({ version: 1, settings: { pollIntervalMin: 60, prPollIntervalMin: 60, maxParallel: 1, agentTimeoutMin: 5, paused: false, notifications: true, launchAtLogin: false }, projects: [project] }));
 
 const port = 48000 + Math.floor(Math.random() * 1000);
 const token = "test-token";
 const engine = spawn(process.execPath, [path.resolve("engine/dist/handsfree-engine.mjs")], {
-  env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, HF_DATA: data, HF_PORT: String(port), HF_TOKEN: token, HF_SKIP_LOGIN_PATH: "1" },
+  env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, HF_DATA: data, HF_PORT: String(port), HF_TOKEN: token, HF_SKIP_LOGIN_PATH: "1", HF_OPEN_CMD: "fakeopen" },
   stdio: ["pipe", "inherit", "inherit"],
 });
 const base = `http://127.0.0.1:${port}`;
@@ -89,6 +98,14 @@ async function waitFor(fn, label, ms = 30000) {
   }
   throw new Error(`timeout waiting for: ${label}`);
 }
+// pr-<n>.json drives the fake `gh pr view` for PR <n>; default = open draft, no checks.
+const prJson = (n, over = {}) =>
+  fs.writeFileSync(
+    path.join(root, `pr-${n}.json`),
+    JSON.stringify({ number: n, url: `https://github.com/acme/repo/pull/${n}`, state: "OPEN", isDraft: true, headRefOid: "aaa111", mergedAt: null, reviewDecision: "", latestReviews: [], statusCheckRollup: [], ...over }),
+  );
+const checkPrs = () => api("/api/check-prs-now", "POST");
+const ticket = async (k) => (await api("/api/state")).tickets[k];
 
 try {
   await waitFor(() => fetch(base + "/api/health").then((r) => r.ok).catch(() => false), "engine up");
@@ -104,7 +121,7 @@ try {
   // first poll happens ~3s after start
   const s1 = await waitFor(async () => {
     const s = await api("/api/state");
-    return s.tickets["DEMO-1"]?.status === "pr_open" && s;
+    return s.tickets["DEMO-1"]?.status === "pr_draft" && s.tickets["DEMO-1"].jiraCommented && s;
   }, "DEMO-1 pr_open");
   const t1 = s1.tickets["DEMO-1"];
   assert.deepEqual(t1.attempts.map((a) => [a.agentName, a.outcome]), [["Grok", "exhausted"], ["Claude Code", "success"]]);
@@ -115,26 +132,232 @@ try {
   assert.match(sh(`git log --oneline main..handsfree/DEMO-1`, remote), /DEMO-1/, "branch pushed to remote");
   const wt = path.join(repo, ".worktrees", "DEMO-1");
   assert.ok(fs.existsSync(path.join(wt, ".handsfree", "mcp.json")), "mcp.json written");
+  const prBodyText = fs.readFileSync(path.join(wt, ".handsfree", "pr-body.md"), "utf8");
+  assert.match(prBodyText, /```\nSummary: added greeting\n```/, "PR body uses Claude's final summary");
   assert.equal(sh("git status --porcelain", repo), "", "main checkout untouched (.worktrees excluded)");
   const log = (await api("/api/tickets/DEMO-1/log")).log;
   assert.match(log, /Falling back to Agent 2\/2/);
   assert.match(log, /saw previous attempt/);
+  assert.match(log, /· session started · claude-test · MCP: github/, "stream-json init formatted");
+  assert.match(log, /→ Bash pnpm test/, "stream-json tool use formatted");
+  assert.match(log, /■ done · success · 3 turns · \$0\.12\n\nSummary: added greeting/, "stream-json result formatted");
+  assert.doesNotMatch(log, /"type":"assistant"/, "raw JSON hidden");
+  assert.match(fs.readFileSync(path.join(root, "prs.log"), "utf8"), /--draft/);
+
+  // Claude's session id is recorded, and "Open" resumes exactly that session
+  assert.equal(t1.attempts[1].sessionId, "sess-1234-abcd");
+  const term = await api("/api/tickets/DEMO-1/open", "POST", {});
+  const mcpAbs = path.join(wt, ".handsfree", "mcp.json");
+  assert.equal(term.command, `claude --resume 'sess-1234-abcd' --mcp-config '${mcpAbs}'`);
+  const launcher = fs.readFileSync(path.join(root, "opened.command"), "utf8");
+  assert.match(launcher, new RegExp(`cd '${wt}'`));
+  assert.ok(launcher.includes(`\nclaude --resume 'sess-1234-abcd' --mcp-config '${mcpAbs}'\n`));
+  assert.match(launcher, /git status --short/);
+  assert.equal((await api("/api/state")).tickets["DEMO-1"].status, "pr_draft", "opening a PR'd ticket doesn't take it over");
 
   // maxParallel=1 → DEMO-2 runs after DEMO-1
-  await waitFor(async () => (await api("/api/state")).tickets["DEMO-2"]?.status === "pr_open", "DEMO-2 pr_open");
+  await waitFor(async () => (await api("/api/state")).tickets["DEMO-2"]?.status === "pr_draft", "DEMO-2 pr_open");
 
   // a ticket that is already known is not picked up again
   await api("/api/poll-now", "POST");
   await sleep(1500);
   assert.equal(Object.keys((await api("/api/state")).tickets).length, 2);
 
-  // merge → next poll removes worktree
-  fs.writeFileSync(path.join(root, "prstate"), "MERGED");
-  await api("/api/poll-now", "POST");
-  await waitFor(async () => (await api("/api/state")).tickets["DEMO-1"]?.status === "done", "DEMO-1 done");
+  // ---- PR check: draft PR gets its PrInfo; merge → worktree removed, Jira told, status merged
+  await checkPrs();
+  const checked = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.pr?.headSha === "aaa111" && t;
+  }, "DEMO-1 PrInfo after first check");
+  assert.equal(checked.status, "pr_draft");
+  assert.equal(checked.pr.ci, "none");
+
+  const failing = (sha, runId) => ({
+    isDraft: false, headRefOid: sha,
+    statusCheckRollup: [{ __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: `https://github.com/acme/repo/actions/runs/${runId}/job/9` }],
+  });
+  const commitsOnRemote = () => sh(`git rev-list --count main..handsfree/DEMO-1`, remote);
+
+  // ---- Publish: gh pr ready + immediate re-check
+  prJson(101, { isDraft: false });
+  await api("/api/tickets/DEMO-1/publish", "POST", {});
+  assert.match(fs.readFileSync(path.join(root, "ready.log"), "utf8"), /pull\/101/);
+  assert.equal((await ticket("DEMO-1")).status, "pr_ready");
+
+  // ---- Paused: CI failure is recorded, no fix queued, and nothing marks the SHA as handled
+  await api("/api/pause", "POST");
+  prJson(101, failing("aaa111", 555));
+  await checkPrs();
+  const pausedT = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.status === "pr_ci_failed" && t;
+  }, "pr_ci_failed while paused");
+  assert.equal(pausedT.fix, undefined);
+  assert.equal(pausedT.pr.lastFixSha, undefined);
+  await api("/api/resume", "POST");
+
+  // ---- Fix round 1: logs fetched, agent chain runs in the same worktree, fix pushed
+  await checkPrs();
+  const fixed1 = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.status === "pr_ready" && t.pr?.fixRounds === 1 && t;
+  }, "fix round 1 pushed", 60000);
+  assert.equal(fixed1.fix, undefined);
+  assert.equal(fixed1.pr.lastFixSha, "aaa111");
+  assert.equal(fixed1.pr.ci, "pending");
+  assert.match(fs.readFileSync(path.join(root, "runs.log"), "utf8"), /run view 555 --log-failed/);
+  const fixLog = (await api("/api/tickets/DEMO-1/log")).log;
+  assert.match(fixLog, /queuing fix round 1\/2/);
+  assert.match(fixLog, /saw ci logs/);
+  assert.match(fixLog, /⇡ Pushed fix round 1/);
+  assert.equal(commitsOnRemote(), "2", "fix commit pushed on top of the feature commit");
+  assert.equal(fs.readFileSync(path.join(wt, ".handsfree", "prompt.md"), "utf8").includes("CI failed on https://github.com/acme/repo/pull/101"), true);
+
+  // ---- GitHub still reports the old failing SHA → shown as failing, but not fixed twice
+  await checkPrs();
+  const stale = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.status === "pr_ci_failed" && t;
+  }, "stale failure shown");
+  assert.equal(stale.pr.fixRounds, 1, "same SHA not fixed twice");
+  assert.equal(stale.fix, undefined);
+  // ---- GitHub sees the pushed fix: new head, checks pending → back to ready
+  prJson(101, { isDraft: false, headRefOid: "fix1", statusCheckRollup: [{ __typename: "CheckRun", name: "test", status: "IN_PROGRESS", conclusion: null }] });
+  await checkPrs();
+  await waitFor(async () => (await ticket("DEMO-1")).status === "pr_ready", "pending CI on the fixed head");
+
+  // ---- Worktree cleaned up, then CI fails on the new head → worktree recreated from the remote branch
+  await api("/api/tickets/DEMO-1/cleanup", "POST");
+  assert.ok(!fs.existsSync(wt), "worktree removed by cleanup");
+  assert.equal((await ticket("DEMO-1")).status, "pr_ready", "cleanup keeps tracking an open PR");
+  prJson(101, failing("bbb222", 556));
+  await checkPrs();
+  const fixed2 = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.pr?.fixRounds === 2 && t.status === "pr_ready" && t;
+  }, "fix round 2 pushed", 60000);
+  assert.ok(fixed2);
+  assert.match((await api("/api/tickets/DEMO-1/log")).log, /recreated worktree from origin\/handsfree\/DEMO-1/);
+  assert.equal(commitsOnRemote(), "3", "round 2 continues the pushed branch instead of restarting from main");
+
+  // ---- Rounds exhausted (max 2) → pr_ci_failed + one "needs you" event; manual Fix CI still works
+  prJson(101, failing("ccc333", 557));
+  await checkPrs();
+  const exhausted = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.status === "pr_ci_failed" && t;
+  }, "rounds exhausted");
+  assert.equal(exhausted.fix, undefined);
+  assert.match((await api("/api/tickets/DEMO-1/log")).log, /🔔 CI still failing/);
+  // Someone pushed to the PR branch meanwhile (GitHub "Update branch", a suggestion, another machine):
+  // the fix must build on top of it, never overwrite it. Two Fix CI clicks at once queue one round.
+  const clone = path.join(root, "clone");
+  sh(`git clone -q ${remote} ${clone}`);
+  sh(`git config user.email t@t.t && git config user.name T && git checkout -q handsfree/DEMO-1 && echo ext > ext.txt && git add -A && git commit -qm "external: reviewer suggestion" && git push -q origin handsfree/DEMO-1`, clone);
+  const [fixA, fixB] = await Promise.all([api("/api/tickets/DEMO-1/fix-ci", "POST", {}), api("/api/tickets/DEMO-1/fix-ci", "POST", {})]);
+  assert.ok([fixA, fixB].filter((r) => r.error).length === 1, "second concurrent Fix CI is refused");
+  await waitFor(async () => (await ticket("DEMO-1")).pr?.fixRounds === 3, "manual fix round 3", 60000);
+  assert.equal((await ticket("DEMO-1")).status, "pr_ready");
+  assert.match(sh(`git log --oneline main..handsfree/DEMO-1`, remote), /external: reviewer suggestion/, "the external commit survived the fix push");
+  assert.equal(commitsOnRemote(), "5", "external commit + fix commit on top of the 3 earlier ones");
+  assert.match((await api("/api/tickets/DEMO-1/log")).log, /synced with origin\/handsfree\/DEMO-1/);
+
+  // ---- A fix agent that changes nothing is not a fix: falls through the chain, round still counted
+  const realAgents = project.agents;
+  project.agents = [{ id: "n", name: "Noop", command: "true", enabled: true, exhaustionPatterns: [] }];
+  await api("/api/config", "PUT", { ...(await api("/api/config")), projects: [project] });
+  prJson(101, failing("ddd555", 560));
+  await checkPrs();
+  await waitFor(async () => (await ticket("DEMO-1")).status === "pr_ci_failed" && (await ticket("DEMO-1")).pr?.ci === "failing", "failing on ddd555");
+  await api("/api/tickets/DEMO-1/fix-ci", "POST", {});
+  const noop = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.pr?.fixRounds === 4 && t.status === "pr_ci_failed" && t;
+  }, "no-op fix round counted", 60000);
+  assert.match(noop.error, /Every agent in the chain failed/);
+  assert.match((await api("/api/tickets/DEMO-1/log")).log, /Noop finished but made no changes/);
+  assert.equal(commitsOnRemote(), "5", "nothing pushed for a no-op round");
+
+  // ---- Take over a running fix, then "Open PR with my changes": your commit is pushed, agents are not re-run
+  project.agents = [{ id: "s0", name: "Sleepy", command: "fakeslow", enabled: true, exhaustionPatterns: [], resumeCommand: "fakeslow --resume {session_id}", sessionIdPattern: "SESSION: ([\\w-]+)" }];
+  await api("/api/config", "PUT", { ...(await api("/api/config")), projects: [project] });
+  prJson(101, failing("eee666", 561));
+  await checkPrs();
+  await waitFor(async () => (await ticket("DEMO-1")).status === "pr_ci_failed" && (await ticket("DEMO-1")).pr?.headSha === "eee666", "failing on eee666");
+  await api("/api/tickets/DEMO-1/fix-ci", "POST", {});
+  await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.status === "running" && t.fix && t.attempts[t.attempts.length - 1]?.sessionId;
+  }, "fix round 5 running", 30000);
+  await api("/api/tickets/DEMO-1/takeover", "POST", {});
+  assert.equal((await ticket("DEMO-1")).status, "manual");
+  fs.writeFileSync(path.join(wt, "byhand.txt"), "fixed by hand\n");
+  const attemptsBefore = (await ticket("DEMO-1")).attempts.length;
+  await api("/api/tickets/DEMO-1/handback", "POST", { mode: "pr" });
+  const handedFix = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.status === "pr_ready" && t.pr?.fixRounds === 5 && t;
+  }, "hand-back after a fix take-over", 60000);
+  assert.equal(handedFix.fix, undefined);
+  assert.equal(handedFix.attempts.length, attemptsBefore + 1, "only the 'You' attempt was added; no agent re-run");
+  assert.equal(handedFix.attempts[handedFix.attempts.length - 1].agentName, "You");
+  assert.equal(commitsOnRemote(), "6", "your commit was pushed");
+  project.agents = realAgents;
+  await api("/api/config", "PUT", { ...(await api("/api/config")), projects: [project] });
+
+  // ---- The remote branch diverged from the worktree: refuse to build on it, never overwrite
+  sh(`git fetch -q origin && git reset -q --hard origin/handsfree/DEMO-1~1 && echo other > other.txt && git add -A && git commit -qm "diverged elsewhere" && git push -q --force origin handsfree/DEMO-1`, clone);
+  prJson(101, failing("fff777", 562));
+  await checkPrs();
+  await waitFor(async () => (await ticket("DEMO-1")).pr?.headSha === "fff777", "failing on fff777");
+  await api("/api/tickets/DEMO-1/fix-ci", "POST", {});
+  const diverged = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.pr?.fixRounds === 6 && t.status === "pr_ci_failed" && t;
+  }, "diverged fix refused", 60000);
+  assert.match(diverged.error, /diverged/);
+  assert.match(sh(`git log --oneline main..handsfree/DEMO-1`, remote), /diverged elsewhere/, "remote branch untouched");
+
+  // ---- CI passes on a published PR → review_ready once
+  prJson(101, { isDraft: false, headRefOid: "ddd444", statusCheckRollup: [{ __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "SUCCESS" }] });
+  await checkPrs();
+  const ready = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.pr?.reviewRequestedAt && t;
+  }, "review_ready");
+  assert.equal(ready.status, "pr_ready");
+  await checkPrs();
+  await sleep(800);
+  assert.equal(((await api("/api/tickets/DEMO-1/log")).log.match(/🔔 Ready for review/g) || []).length, 1, "review_ready fired once");
+
+  // ---- Approved 2 h ago → pr_approved and a merge nudge, once
+  prJson(101, { isDraft: false, headRefOid: "ddd444", reviewDecision: "APPROVED", latestReviews: [{ state: "APPROVED", submittedAt: new Date(Date.now() - 2 * 3600_000).toISOString() }], statusCheckRollup: [{ __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "SUCCESS" }] });
+  await checkPrs();
+  const approved = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.status === "pr_approved" && t.pr.mergeNudgedAt && t;
+  }, "approved + nudge");
+  assert.ok(approved.pr.approvedAt);
+  await checkPrs();
+  await sleep(800);
+  assert.equal(((await api("/api/tickets/DEMO-1/log")).log.match(/🔔 Waiting to be merged/g) || []).length, 1, "nudge fired once");
+
+  prJson(101, { state: "MERGED", isDraft: false, headRefOid: "ddd444", mergedAt: "2026-10-15T10:00:00Z" });
+  await checkPrs();
+  const mergedT = await waitFor(async () => {
+    const t = await ticket("DEMO-1");
+    return t.status === "merged" && t;
+  }, "DEMO-1 merged");
   assert.ok(!fs.existsSync(wt), "worktree removed after merge");
+  assert.equal(mergedT.pr.mergedAt, "2026-10-15T10:00:00Z");
+  assert.match(fs.readFileSync(path.join(root, "comments.log"), "utf8"), /DEMO-1 .*Merged.*pull\/101/, "merge commented on Jira");
+  assert.match((await api("/api/tickets/DEMO-1/log")).log, /🔔 Merged/);
 
   // failing chain → failed, then retry
+  // DEMO-2 is forgotten and re-picked as fresh work: even though its old branch is still on the remote,
+  // a ticket without a PR starts from the base branch.
+  await api("/api/tickets/DEMO-2/cleanup", "POST");
+  assert.equal((await ticket("DEMO-2")).status, "pr_draft", "cleanup keeps tracking an open PR");
   project.agents = [{ id: "x", name: "Broken", command: "false", enabled: true, exhaustionPatterns: [] }];
   const cfg = await api("/api/config");
   await api("/api/config", "PUT", { ...cfg, projects: [project] });
@@ -142,12 +365,62 @@ try {
   await api("/api/poll-now", "POST");
   await waitFor(async () => (await api("/api/state")).tickets["DEMO-2"]?.status === "failed", "DEMO-2 failed");
 
+  // ---- Watch live + take over, with a non-Claude agent (any tool works) ----
+  project.agents = [
+    { id: "s", name: "Sleepy", command: "fakeslow", enabled: true, exhaustionPatterns: [], resumeCommand: "fakeslow --resume {session_id}", sessionIdPattern: "SESSION: ([\\w-]+)" },
+  ];
+  const cfg2 = await api("/api/config");
+  await api("/api/config", "PUT", { ...cfg2, settings: { ...cfg2.settings, slowAfterMin: 0 }, projects: [project] });
+  await api("/api/tickets/DEMO-2/forget", "POST");
+  await api("/api/poll-now", "POST");
+  const running = await waitFor(async () => {
+    const t = (await api("/api/state")).tickets["DEMO-2"];
+    return t?.status === "running" && t.attempts[0]?.sessionId && t;
+  }, "DEMO-2 running with a session id");
+  assert.equal(running.attempts[0].sessionId, "abc-12345678", "session id found with the agent's own pattern");
+
+  // slow flag (slowAfterMin = 0 → first heartbeat)
+  await waitFor(async () => (await api("/api/state")).tickets["DEMO-2"].slow === true, "slow flag", 20000);
+
+  // Open while running → live view whose Enter key calls back to take over
+  const live = await api("/api/tickets/DEMO-2/open", "POST", {});
+  assert.match(live.command, /live view/);
+  const liveScript = fs.readFileSync(path.join(root, "opened.command"), "utf8");
+  assert.match(liveScript, /tail -n 200 -f /);
+  assert.match(liveScript, /read -r _/);
+  assert.ok(liveScript.includes(`/api/tickets/DEMO-2/takeover?text=1`) && liveScript.includes(`x-handsfree-token: ${token}`));
+  assert.equal((await api("/api/state")).tickets["DEMO-2"].status, "running", "watching doesn't interrupt");
+
+  // Pressing Enter → takeover returns the agent's own resume command as text
+  const tr = await fetch(`${base}/api/tickets/DEMO-2/takeover?text=1`, { method: "POST", headers: { "x-handsfree-token": token } });
+  assert.equal(await tr.text(), "fakeslow --resume 'abc-12345678'");
+  const taken = (await api("/api/state")).tickets["DEMO-2"];
+  assert.equal(taken.status, "manual");
+  assert.equal(taken.attempts[0].outcome, "taken_over");
+  assert.ok(!taken.slow);
+
+  // Nothing changed yet → "Open PR with my changes" explains why it can't
+  const noChanges = await api("/api/tickets/DEMO-2/handback", "POST", { mode: "pr" });
+  assert.match(noChanges.error, /no changes/);
+
+  // You edit in the worktree, then hand back with a PR (agents are not re-run)
+  const wt2 = path.join(repo, ".worktrees", "DEMO-2");
+  fs.writeFileSync(path.join(wt2, "fix.txt"), "done by hand\n");
+  await api("/api/tickets/DEMO-2/handback", "POST", { mode: "pr" });
+  const handed = await waitFor(async () => {
+    const t = (await api("/api/state")).tickets["DEMO-2"];
+    return t.status === "pr_draft" && t;
+  }, "DEMO-2 pr_open after hand back");
+  assert.deepEqual(handed.attempts.map((a) => [a.agentName, a.outcome]), [["Sleepy", "taken_over"], ["You", "success"]]);
+  assert.match(sh(`git log --oneline main..handsfree/DEMO-2`, remote), /DEMO-2/, "your change was committed and pushed");
+  assert.equal(sh(`git rev-list --count main..handsfree/DEMO-2`, remote), "1", "fresh pick-up started from main, not from the old pushed branch");
+
   const doc = await api("/api/doctor");
   assert.ok(doc.find((d) => d.name === "gh").ok);
 
   console.log("\n✅ e2e passed");
 } catch (e) {
-  console.error("\n❌ e2e failed:", e.message);
+  console.error("\n❌ e2e failed:", e.stack || e.message);
   for (const k of ["DEMO-1", "DEMO-2"]) {
     try {
       console.error(`--- log ${k} ---\n` + fs.readFileSync(path.join(data, "logs", `${k}.log`), "utf8"));

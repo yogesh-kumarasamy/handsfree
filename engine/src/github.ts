@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
+import { dedupeChecks, PR_JSON_FIELDS, trimFailedLogs, type RawPr } from "./prstate";
 import { exec } from "./shell";
-import type { ProjectConfig, Ticket } from "./types";
+import type { FailedCheck, ProjectConfig, Ticket } from "./types";
 
 async function gh(cwd: string, args: string[]) {
   const r = await exec("gh", args, { cwd, timeoutMs: 120_000 });
@@ -24,8 +25,30 @@ export async function openPr(project: ProjectConfig, t: Ticket, body: string): P
   return url.trim();
 }
 
-/** "OPEN" | "MERGED" | "CLOSED" | undefined (unknown / gh failed). */
-export async function prState(repoPath: string, url: string) {
-  const s = await gh(repoPath, ["pr", "view", url, "--json", "state", "--jq", ".state"]).catch(() => "");
-  return s || undefined;
+/** Everything the PR check needs, in one `gh` call. Throws when gh fails (not found, not logged in, deleted PR). */
+export async function fetchPr(repoPath: string, url: string): Promise<RawPr> {
+  const out = await gh(repoPath, ["pr", "view", url, "--json", PR_JSON_FIELDS]);
+  return JSON.parse(out) as RawPr;
+}
+
+/** Mark a draft PR ready for review. */
+export async function publishPr(repoPath: string, url: string) {
+  await gh(repoPath, ["pr", "ready", url]);
+}
+
+/**
+ * Failing-step logs for the fix prompt: `gh run view --log-failed` once per Actions run,
+ * a link line for checks without a run. Never throws; fetch errors become text.
+ */
+export async function failedCheckLogs(repoPath: string, checks: FailedCheck[]): Promise<string> {
+  const parts = await Promise.all(
+    dedupeChecks(checks).map(async (c) => {
+      if (!c.runId) return { name: c.name, detailsUrl: c.detailsUrl };
+      const r = await exec("gh", ["run", "view", c.runId, "--log-failed"], { cwd: repoPath, timeoutMs: 120_000 });
+      return r.code === 0
+        ? { name: c.name, detailsUrl: c.detailsUrl, log: r.stdout }
+        : { name: c.name, detailsUrl: c.detailsUrl, error: (r.stderr || r.stdout).trim().slice(0, 300) || `exit ${r.code}` };
+    }),
+  );
+  return trimFailedLogs(parts);
 }

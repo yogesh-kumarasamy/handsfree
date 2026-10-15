@@ -29,6 +29,9 @@ function blankProject(): ProjectConfig {
     agents: AGENT_PRESETS.map((a) => ({ ...a, id: uid(), exhaustionPatterns: [...a.exhaustionPatterns] })),
     promptExtra: "",
     draftPr: true,
+    ciAutoFix: true,
+    ciFixMaxRounds: 2,
+    mergeNudgeAfterMin: 30,
   };
 }
 
@@ -295,6 +298,30 @@ function ProjectEditor({
                 </div>
               </div>
             </div>
+            <h3 className="card-title" style={{ marginTop: 22 }}>After the PR opens</h3>
+            <p className="card-sub">HandsFree keeps checking the PR on GitHub (Settings → <i>Check PRs every</i>).</p>
+            <div className="grid3">
+              <div className="field">
+                <label>CI fails</label>
+                <div className="row" style={{ height: 34 }}>
+                  <Toggle on={p.ciAutoFix} onChange={(v) => set({ ciAutoFix: v })} />
+                  <span>{p.ciAutoFix ? "Agents fix it in the same worktree" : "Just show it as failing"}</span>
+                </div>
+              </div>
+              <div className="field">
+                <label>Max automatic fix rounds</label>
+                <input className="input num-input" type="number" min={0} max={5} value={p.ciFixMaxRounds} onChange={(e) => set({ ciFixMaxRounds: Math.min(5, Math.max(0, Number(e.target.value) || 0)) })} />
+                <span className="hint">Per PR. “Fix CI” on the dashboard always works.</span>
+              </div>
+              <div className="field">
+                <label>Approved but not merged after</label>
+                <div className="row">
+                  <input className="input num-input" type="number" min={5} max={1440} value={p.mergeNudgeAfterMin} onChange={(e) => set({ mergeNudgeAfterMin: Math.min(1440, Math.max(5, Number(e.target.value) || 30)) })} />
+                  <span className="muted">min</span>
+                </div>
+                <span className="hint">Then HandsFree nudges you (and, later, the team).</span>
+              </div>
+            </div>
           </>
         )}
 
@@ -371,6 +398,21 @@ function ProjectEditor({
                     <textarea className="textarea code" rows={4} style={{ marginTop: 8 }} value={a.exhaustionPatterns.join("\n")} onChange={(e) => setAgent(a.id, { exhaustionPatterns: e.target.value.split("\n").filter((x) => x.trim()) })} />
                     <span className="hint small muted">One regex per line, matched against the end of the agent's output.</span>
                   </details>
+                  <details style={{ marginTop: 6 }}>
+                    <summary className="small muted" style={{ cursor: "pointer" }}>
+                      Take over {a.resumeCommand?.trim() ? "· resumes the session" : "· opens a shell"}
+                    </summary>
+                    <div className="field" style={{ marginTop: 8, marginBottom: 8 }}>
+                      <label className="small">Resume command</label>
+                      <input className="input code" value={a.resumeCommand || ""} placeholder="e.g. mytool resume {session_id}" onChange={(e) => setAgent(a.id, { resumeCommand: e.target.value })} />
+                      <span className="hint">Interactive command that continues this agent's session when you take over. Placeholders: <span className="mono">{"{session_id} {mcp_file} {worktree} {issue_key}"}</span>. Leave empty to get a shell in the worktree.</span>
+                    </div>
+                    <div className="field" style={{ marginBottom: 0 }}>
+                      <label className="small">Session ID pattern</label>
+                      <input className="input code" value={a.sessionIdPattern || ""} placeholder="e.g. session[:\s]+([\w-]+)" onChange={(e) => setAgent(a.id, { sessionIdPattern: e.target.value })} />
+                      <span className="hint">Regex with one group that finds the session ID in the agent's output. Claude's is built in.</span>
+                    </div>
+                  </details>
                 </div>
                 <div className="agent-controls">
                   <Toggle on={a.enabled} onChange={(v) => setAgent(a.id, { enabled: v })} />
@@ -427,7 +469,10 @@ function ProjectEditor({
                 ))}
               </dd>
               <dt>Pull requests</dt><dd>{p.draftPr ? "Draft" : "Ready for review"}, PR link commented on the Jira ticket</dd>
-              <dt>Cleanup</dt><dd>Worktree removed after the PR is merged or closed</dd>
+              <dt>After the PR</dt>
+              <dd>
+                {p.ciAutoFix ? `CI failures fixed automatically, up to ${p.ciFixMaxRounds} round${p.ciFixMaxRounds === 1 ? "" : "s"}` : "CI failures only shown"} · nudge after {p.mergeNudgeAfterMin} min approved · worktree removed on merge, merge commented on the ticket
+              </dd>
             </dl>
             {problems.length > 0 && (
               <div className="callout warn" style={{ marginTop: 16 }}>

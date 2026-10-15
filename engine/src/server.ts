@@ -57,10 +57,35 @@ export function startServer(o: Orchestrator, port: number, token: string) {
     };
 
     try {
-      const m = url.pathname.match(/^\/api\/tickets\/([^/]+)\/(retry|stop|cleanup|forget|log)$/);
+      const m = url.pathname.match(/^\/api\/tickets\/([^/]+)\/(retry|stop|cleanup|forget|log|open|takeover|handback|publish|fix-ci)$/);
       if (m) {
         const key = decodeURIComponent(m[1]);
+        if (m[2] === "publish" || m[2] === "fix-ci") {
+          try {
+            if (m[2] === "publish") await o.publish(key);
+            else await o.fixCi(key);
+            return send(200, {});
+          } catch (e) {
+            return send(400, { error: (e as Error).message });
+          }
+        }
         if (m[2] === "log") return send(200, { log: o.readLog(key) });
+        if (m[2] === "open" || m[2] === "takeover" || m[2] === "handback") {
+          const b = await body<{ mode?: string }>();
+          try {
+            if (m[2] === "open") return send(200, await o.open(key));
+            if (m[2] === "takeover") {
+              // Called from a live Terminal window: reply with just the resume command as text.
+              const r = await o.takeOver(key, false);
+              if (url.searchParams.get("text")) return void res.writeHead(200, { "content-type": "text/plain" }).end(r.resume);
+              return send(200, r);
+            }
+            await o.handBack(key, b.mode === "pr" ? "pr" : "agents");
+            return send(200, {});
+          } catch (e) {
+            return send(400, { error: (e as Error).message });
+          }
+        }
         if (m[2] === "retry") o.retry(key);
         if (m[2] === "stop") o.stop(key);
         if (m[2] === "cleanup") await o.cleanup(key);
@@ -82,6 +107,9 @@ export function startServer(o: Orchestrator, port: number, token: string) {
           return send(200, {});
         case "POST /api/poll-now":
           void o.poll();
+          return send(200, {});
+        case "POST /api/check-prs-now":
+          o.checkPrsNow();
           return send(200, {});
         case "POST /api/test-jira": {
           const { project } = await body<{ project: ProjectConfig }>();

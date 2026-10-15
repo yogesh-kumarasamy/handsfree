@@ -14,6 +14,8 @@ const SCREENS: { id: string; label: string; opts: DemoOptions }[] = [
   { id: "review", label: "5 · Review", opts: { scenario: "empty", view: "projects", editorNew: true, editorStep: 4 } },
   { id: "dashboard", label: "Dashboard", opts: { scenario: "busy" } },
   { id: "fallback", label: "Ticket + fallback", opts: { scenario: "busy", ticket: "SET-982" } },
+  { id: "manual", label: "Taken over", opts: { scenario: "busy", ticket: "CSW-1402" } },
+  { id: "slow", label: "Slow run", opts: { scenario: "busy", ticket: "CSW-1421" } },
   { id: "projects", label: "Projects", opts: { scenario: "busy", view: "projects" } },
   { id: "settings", label: "Settings", opts: { scenario: "busy", view: "settings" } },
 ];
