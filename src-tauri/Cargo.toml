@@ -1,0 +1,20 @@
+[package]
+name = "handsfree"
+version = "0.1.0"
+description = "HandsFree: Jira tickets to draft PRs, unattended"
+edition = "2021"
+
+[lib]
+name = "handsfree_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
