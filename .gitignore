@@ -1,0 +1,29 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+engine/dist/
+src-tauri/target/
+src-tauri/gen/
+.vite/
+
+# local env / secrets
+.env
+.env.*
+!.env.example
+
+# logs & runtime data
+*.log
+logs/
+.handsfree/
+
+# agent worktrees (created by the app and by Claude Code jobs)
+.worktrees/
+.claude/worktrees/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp

@@ -1,0 +1,33 @@
+{
+  "name": "handsfree",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "build:engine": "esbuild engine/src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=engine/dist/handsfree-engine.mjs",
+    "engine": "npm run build:engine && node engine/dist/handsfree-engine.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p engine/tsconfig.json --noEmit",
+    "test:engine": "npm run build:engine && node engine/test/e2e.mjs",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-autostart": "^2.0.0",
+    "@tauri-apps/plugin-dialog": "^2.0.0",
+    "@tauri-apps/plugin-notification": "^2.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0",
+    "vite": "^5.4.0"
+  }
+}
