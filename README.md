@@ -33,6 +33,8 @@ acli jira auth login                                     # only for Jira project
 claude --version; grok --version                         # your agents, logged in
 # Setmore collab messages need an OAuth client id for HandsFree (public client, PKCE,
 # redirect http://127.0.0.1:47831/oauth/callback) — ask the auth team, paste it in Settings → Accounts.
+# The client must be allowed the scopes HandsFree requests, above all setmore.apis-internal.fullaccess
+# (the MCP server refuses every tool call without it) and awapis.chat.streams.push (send_message).
 # Linear projects: Settings → Accounts → Linear → Log in (HandsFree registers itself with Linear; no client id).
 ```
 
