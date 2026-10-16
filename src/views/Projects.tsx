@@ -398,7 +398,7 @@ function ProjectEditor({
         {step === 0 && (
           <>
             <h3 className="card-title">Repository</h3>
-            <p className="card-sub">The local git repo HandsFree works in. Each ticket gets its own worktree under <span className="mono">.worktrees/&lt;KEY&gt;</span>, so your checkout is never touched.</p>
+            <p className="card-sub">The local git repo HandsFree works in. Each ticket gets its own worktree under <span className="mono">.worktrees/&lt;KEY&gt;</span> (a GitHub key&apos;s <span className="mono">#</span> becomes <span className="mono">-</span>, since it breaks build tools), so your checkout is never touched.</p>
             <div className="field">
               <label>Repository folder</label>
               <div className="row">

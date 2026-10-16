@@ -130,7 +130,7 @@ Agents also get `HANDSFREE=1`, `HANDSFREE_ISSUE=<KEY>` and `CI=1` in their envir
 - Config, state and per-ticket logs: `~/Library/Application Support/HandsFree/`
 - Engine log: `~/Library/Logs/HandsFree/engine.log`
 - Routine logs: `~/Library/Application Support/HandsFree/logs/routine-<id>.log`
-- Worktrees: `<repo>/.worktrees/<KEY>`. `.worktrees/` and `.handsfree/` are added to the repo's `.git/info/exclude`, so your checkout stays clean.
+- Worktrees: `<repo>/.worktrees/<KEY>` (characters outside `A-Z a-z 0-9 . _ -` become `-`, so GitHub's `repo#12` lives in `repo-12`: a `#` in the path breaks Vite/esbuild builds). `.worktrees/` and `.handsfree/` are added to the repo's `.git/info/exclude`, so your checkout stays clean.
 - Setmore login: `~/Library/Application Support/HandsFree/auth/setmore.json` (mode 600; never sent anywhere but Setmore).
 
 The engine listens on `127.0.0.1` with a random port and a per-launch token. Only the app can talk to it.
