@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { migrateState, normalizeProject, normalizeRoutine } from "../dist/test/store.js";
+import { migrateState, normalizeProject, normalizeRoutine, normalizeSettings, withRequiredScope } from "../dist/test/store.js";
 
 const cfg = (draftPr) => ({ version: 1, settings: {}, projects: [{ id: "p1", draftPr }] });
 const ticket = (status, projectId = "p1") => ({ key: "X-1", projectId, status, branch: "", worktree: "", agentIndex: 0, attempts: [], createdAt: "", updatedAt: "" });
@@ -115,4 +115,15 @@ test("normalizeProject: a customised Claude command is left alone", () => {
   const custom = "claude -p {prompt} --model opus --output-format stream-json --verbose";
   const p = normalizeProject({ id: "p1", agents: [{ id: "a", name: "Claude Code", command: custom }] });
   assert.equal(p.agents[0].command, custom);
+});
+
+test("saved Setmore scopes without the server's required scope get it appended; present ones are kept as-is", () => {
+  const required = "setmore.apis-internal.fullaccess";
+  assert.equal(withRequiredScope("openid offline_access awapis.streams.read", required), `openid offline_access awapis.streams.read ${required}`);
+  assert.equal(withRequiredScope(` openid  ${required} awapis.users.read `, required), `openid ${required} awapis.users.read`);
+  assert.equal(withRequiredScope(undefined, required), required);
+  const s = normalizeSettings({ accounts: { setmore: { clientId: "cid", scopes: "openid offline_access awapis.chat.streams.push" } } });
+  assert.equal(s.accounts.setmore.scopes, `openid offline_access awapis.chat.streams.push ${required}`);
+  assert.equal(s.accounts.setmore.clientId, "cid");
+  assert.match(normalizeSettings(undefined).accounts.setmore.scopes, /\bsetmore\.apis-internal\.fullaccess\b/);
 });

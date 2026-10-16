@@ -12,6 +12,7 @@ import {
   DEFAULT_DONE_STATUS,
   DEFAULT_LINEAR_ACCOUNT,
   DEFAULT_SETMORE_ACCOUNT,
+  SETMORE_REQUIRED_SCOPE,
   DEFAULT_TEMPLATES,
   type Config,
   type EngineState,
@@ -54,9 +55,16 @@ export function normalizeSettings(raw: Partial<Settings> | undefined): Settings 
     linear: { ...DEFAULT_LINEAR_ACCOUNT, ...(raw?.accounts?.linear || {}) },
   };
   s.accounts.setmore.redirectPort = clamp(s.accounts.setmore.redirectPort, 1024, 65535, DEFAULT_SETMORE_ACCOUNT.redirectPort);
+  s.accounts.setmore.scopes = withRequiredScope(s.accounts.setmore.scopes, SETMORE_REQUIRED_SCOPE);
   s.accounts.linear.redirectPort = clamp(s.accounts.linear.redirectPort, 1024, 65535, DEFAULT_LINEAR_ACCOUNT.redirectPort);
   s.prPollIntervalMin = clamp(s.prPollIntervalMin, 1, 60, DEFAULT_SETTINGS.prPollIntervalMin);
   return s;
+}
+
+/** Scopes saved before the server's required scope was known get it appended; a login with those saved scopes would 403 on every tool call. */
+export function withRequiredScope(scopes: string | undefined, required: string): string {
+  const list = String(scopes || "").split(/\s+/).filter(Boolean);
+  return (list.includes(required) ? list : [...list, required]).join(" ");
 }
 
 export function normalizeMessaging(m: Partial<MessagingConfig> | undefined): MessagingConfig {
