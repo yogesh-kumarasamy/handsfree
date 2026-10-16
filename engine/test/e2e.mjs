@@ -625,7 +625,9 @@ try {
   assert.equal(ghT.description, "Say bye");
   const ghPrN = Number(ghT.prUrl.split("/").pop());
   assert.match(fs.readFileSync(path.join(root, "ghcomments.log"), "utf8"), new RegExp(`issue comment 5 --repo acme/repo --body .*GitHub issue.*pull/${ghPrN}`));
-  assert.match(fs.readFileSync(path.join(wt.replace("DEMO-1", "repo#5"), ".handsfree", "prompt.md"), "utf8"), /^You are working unattended on GitHub issue repo#5: Add farewell/);
+  assert.equal(ghT.worktree, wt.replace("DEMO-1", "repo-5"), "the worktree folder has no # (Vite/esbuild read it as a URL fragment); the branch keeps the key");
+  assert.equal(ghT.branch, "handsfree/repo#5");
+  assert.match(fs.readFileSync(path.join(wt.replace("DEMO-1", "repo-5"), ".handsfree", "prompt.md"), "utf8"), /^You are working unattended on GitHub issue repo#5: Add farewell/);
   prJson(ghPrN, { state: "MERGED", isDraft: false, mergedAt: "2026-10-15T11:00:00Z" });
   await checkPrs();
   await waitFor(async () => (await ticket("repo#5")).trackerDone === true, "repo#5 trackerDone");

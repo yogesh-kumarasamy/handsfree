@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { exec } from "./shell";
+import { worktreeDirName } from "./naming";
 import type { ProjectConfig, Ticket } from "./types";
 
 async function git(cwd: string, args: string[], timeoutMs = 120_000) {
@@ -31,7 +32,7 @@ async function ensureExcluded(repo: string) {
 }
 
 export function worktreePath(project: ProjectConfig, key: string) {
-  return path.join(project.repoPath, ".worktrees", key);
+  return path.join(project.repoPath, ".worktrees", worktreeDirName(key));
 }
 
 /** Create (or reuse) the ticket's worktree. Returns a log line. */

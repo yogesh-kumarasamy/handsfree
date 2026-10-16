@@ -76,6 +76,15 @@ export function slugify(s: string, max = 48): string {
   return out || "change";
 }
 
+/**
+ * The ticket's folder name under `.worktrees/`: the key with anything outside `[A-Za-z0-9._-]` turned into `-`.
+ * GitHub keys look like `repo#12`; a `#` in the path breaks Vite/esbuild (they read it as a URL fragment and the
+ * build hangs or can't resolve imports), and `%`, `?`, spaces and the like upset other tools. Never empty.
+ */
+export function worktreeDirName(key: string): string {
+  return key.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "ticket";
+}
+
 /** Label names out of a tracker's label list: ["bug"], [{name:"bug"}] or {nodes:[{name}]} (Linear). */
 export function labelNames(raw: unknown): string[] {
   const list = Array.isArray(raw) ? raw : Array.isArray((raw as { nodes?: unknown[] })?.nodes) ? (raw as { nodes: unknown[] }).nodes : [];
