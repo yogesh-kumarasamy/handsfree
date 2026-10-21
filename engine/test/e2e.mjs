@@ -34,6 +34,7 @@ sh(`git add -A && git commit -qm init && git remote add origin ${remote} && git 
 // --- fakes
 script("acli", `
 if [ "$1 $2 $3" = "jira workitem search" ]; then
+  if [ -f "${root}/ACLI_UNAUTH" ]; then echo "✗ Error: unauthorized: use 'acli [product] auth login' to authenticate" >&2; exit 1; fi
   echo '[{"key":"DEMO-1","fields":{"summary":"Add greeting","description":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Say hi in README"}]}]}}},{"key":"DEMO-2","fields":{"summary":"Second ticket"}}]'
   exit 0
 fi
@@ -613,6 +614,22 @@ try {
   assert.deepEqual(handed.attempts.map((a) => [a.agentName, a.outcome]), [["Sleepy", "taken_over"], ["You", "success"]]);
   assert.match(sh(`git log --oneline main..handsfree/DEMO-2`, remote), /DEMO-2/, "your change was committed and pushed");
   assert.equal(sh(`git rev-list --count main..handsfree/DEMO-2`, remote), "1", "fresh pick-up started from main, not from the old pushed branch");
+
+  // ---- Expired tracker login: the poll records the error; once fixed, Retry (one project's query, now) clears it
+  fs.writeFileSync(path.join(root, "ACLI_UNAUTH"), "");
+  await api("/api/poll-now", "POST");
+  await waitFor(async () => /unauthorized/.test((await api("/api/state")).pollErrors?.p1 || ""), "p1 poll error recorded");
+  const failedRetry = await api("/api/projects/p1/poll", "POST", {});
+  assert.equal(failedRetry.ok, false, "still logged out: retry reports the error");
+  assert.match(failedRetry.error, /unauthorized/);
+  fs.unlinkSync(path.join(root, "ACLI_UNAUTH"));
+  const retry = await api("/api/projects/p1/poll", "POST", {});
+  assert.equal(retry.ok, true, "after login the retry works");
+  assert.equal(retry.found, 2);
+  const afterRetry = await api("/api/state");
+  assert.equal(afterRetry.pollErrors.p1, undefined, "the error is gone without waiting for the next poll");
+  assert.equal(afterRetry.pollCheckedAt.p1, retry.checkedAt);
+  assert.equal((await api("/api/projects/nope/poll", "POST", {})).error, "No such project.");
 
   // ---- A GitHub Issues project on the same repo (default pickup label): waits in Assigned, Pickup ready labels it, then PR, comment via gh, close on merge
   const fakeClaudeOnly = [{ id: "c1", name: "Claude Code", command: "fakeclaude -p {prompt_file} --mcp-config {mcp_file}", enabled: true, exhaustionPatterns: ["rate.?limit"] }];

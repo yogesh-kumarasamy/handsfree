@@ -7,6 +7,26 @@ const WORK: TicketStatus[] = ["running", "manual", "failed", "stopped", "queued"
 const ORDER: TicketStatus[] = ["awaiting_pickup", ...WORK, "pr_ci_failed", "pr_draft", "pr_ready", "pr_approved", "merged", "done"];
 
 type Section = "assigned" | "work" | "prs" | "approved" | "merged";
+
+/** Least-urgent columns start folded; you can fold or unfold any column, and the choice is remembered on this Mac. */
+const DEFAULT_COLLAPSED: Section[] = ["approved", "merged"];
+const COLLAPSED_KEY = "hf.board.collapsed";
+function loadCollapsed(): Set<Section> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_KEY);
+    if (raw) return new Set(JSON.parse(raw) as Section[]);
+  } catch {
+    /* storage unavailable: defaults */
+  }
+  return new Set(DEFAULT_COLLAPSED);
+}
+function saveCollapsed(c: Set<Section>) {
+  try {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...c]));
+  } catch {
+    /* not remembered; still works for this session */
+  }
+}
 function sectionOf(t: Ticket): Section {
   if (t.status === "awaiting_pickup") return "assigned";
   if (t.status === "pr_approved") return "approved";
@@ -32,6 +52,31 @@ export function Dashboard({
   const [selected, setSelected] = useState<string | undefined>(initialTicket);
   const [showClosed, setShowClosed] = useState(false);
   const [showAllMerged, setShowAllMerged] = useState(false);
+  const [collapsed, setCollapsed] = useState<Set<Section>>(loadCollapsed);
+  const fold = (id: Section) =>
+    setCollapsed((c) => {
+      const n = new Set(c);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      saveCollapsed(n);
+      return n;
+    });
+  const col = (id: Section) => ({ collapsed: collapsed.has(id), onToggle: () => fold(id) });
+  const [retrying, setRetrying] = useState<Record<string, boolean>>({});
+  const [retryNote, setRetryNote] = useState<{ pid: string; text: string }>();
+  // Runs the project's tracker query now: proof the login (or JQL) is fixed, without waiting for the next poll.
+  const retryProject = async (pid: string) => {
+    setRetrying((r) => ({ ...r, [pid]: true }));
+    setRetryNote(undefined);
+    try {
+      const r = await api.pollProject(pid);
+      if (r.ok) setRetryNote({ pid, text: `${projects[pid]?.name || pid}: tracker works again — ${r.found ?? 0} ${r.found === 1 ? "ticket matches" : "tickets match"}.` });
+    } catch (e) {
+      setNotice(`Retry ${projects[pid]?.name || pid}: ${String((e as Error).message || e)}`);
+    } finally {
+      setRetrying((r) => ({ ...r, [pid]: false }));
+    }
+  };
   const [notice, setNotice] = useState<string>();
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [compose, setCompose] = useState<{ keys: string[]; text: string; sending?: boolean; result?: string }>();
@@ -153,9 +198,23 @@ export function Dashboard({
       )}
       {pollErrors.map(([pid, err]) => (
         <div key={pid} className="callout err" style={{ marginBottom: 12 }}>
-          <b>{projects[pid]?.name || pid}:</b> <span className="t">{err}</span>
+          <span className="t">
+            <b>{projects[pid]?.name || pid}:</b> {err}
+            <span className="small faint"> · checked {retrying[pid] ? "now…" : ago(state.pollCheckedAt?.[pid] || state.lastPollAt)}</span>
+          </span>
+          <div className="spacer" />
+          <button className="btn sm" onClick={() => retryProject(pid)} disabled={retrying[pid]} title="Run this project's tracker query now; the error clears if it works">
+            {retrying[pid] ? "Checking…" : "Retry now"}
+          </button>
         </div>
       ))}
+      {retryNote && !state.pollErrors?.[retryNote.pid] && (
+        <div className="callout info" style={{ marginBottom: 12 }}>
+          <span className="t">✓ {retryNote.text}</span>
+          <div className="spacer" />
+          <button className="btn ghost sm" onClick={() => setRetryNote(undefined)} title="Dismiss">✕</button>
+        </div>
+      )}
 
       <div className="stats">
         <div className="card stat">
@@ -186,9 +245,9 @@ export function Dashboard({
 
       <div className={`dash-grid ${sel ? "with-detail" : ""}`}>
         <div style={{ minWidth: 0 }}>
-          <div className="board">
+          <div className="board" style={{ gridTemplateColumns: (["assigned", "work", "prs", "approved", "merged"] as Section[]).map((id) => (collapsed.has(id) ? "40px" : "minmax(205px, 1fr)")).join(" ") }}>
             {/* Assigned: found by the query, waiting for the pickup label */}
-            <Column title="Assigned" count={assigned.length} hint="Waits for the pickup label before any agent starts">
+            <Column {...col("assigned")} title="Assigned" count={assigned.length} hint="Waits for the pickup label before any agent starts">
               {assigned.length === 0 && <div className="kempty">No tickets waiting for triage.</div>}
               {assigned.map((t) => {
                 const label = projects[t.projectId]?.tracker.pickupLabel || "pickup label";
@@ -208,7 +267,7 @@ export function Dashboard({
             </Column>
 
             {/* In progress */}
-            <Column title="In progress" count={work.length}>
+            <Column {...col("work")} title="In progress" count={work.length} alert={work.some((t) => t.status === "failed" || t.status === "stopped")}>
               {work.length === 0 && <div className="kempty">Nothing running. HandsFree checks your tracker queries every {config.settings.pollIntervalMin} min.</div>}
               {work.map((t) => (
                 <div key={t.key} className={cardCls(t)} onClick={() => toggle(t)}>
@@ -225,6 +284,8 @@ export function Dashboard({
 
             {/* Pull requests; the collab selection lives here */}
             <Column
+              {...col("prs")}
+              alert={prs.some((t) => t.status === "pr_ci_failed")}
               title="Pull requests"
               count={prs.length}
               actions={
@@ -269,7 +330,13 @@ export function Dashboard({
             </Column>
 
             {/* Approved, not merged */}
-            <Column title="Approved" count={approved.length} hint="Approved, not merged yet">
+            <Column
+              {...col("approved")}
+              title="Approved"
+              count={approved.length}
+              hint="Approved, not merged yet"
+              alert={approved.some((t) => t.pr?.approvedAt && (Date.now() - new Date(t.pr.approvedAt).getTime()) / 60_000 >= (projects[t.projectId]?.mergeNudgeAfterMin ?? 30))}
+            >
               {approved.length === 0 && <div className="kempty">Nothing waiting to merge.</div>}
               {approved.map((t) => {
                 const limit = projects[t.projectId]?.mergeNudgeAfterMin ?? 30;
@@ -293,6 +360,7 @@ export function Dashboard({
 
             {/* Merged */}
             <Column
+              {...col("merged")}
               title="Merged"
               count={mergedAll.length}
               actions={
@@ -348,12 +416,42 @@ export function Dashboard({
   );
 }
 
-function Column({ title, count, hint, actions, children }: { title: string; count: number; hint?: string; actions?: React.ReactNode; children: React.ReactNode }) {
+function Column({
+  title,
+  count,
+  hint,
+  actions,
+  collapsed,
+  alert,
+  onToggle,
+  children,
+}: {
+  title: string;
+  count: number;
+  hint?: string;
+  actions?: React.ReactNode;
+  collapsed: boolean;
+  /** Something in the column needs you (failed run, red CI, overdue merge): flagged on the folded strip too. */
+  alert?: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  if (collapsed) {
+    return (
+      <button type="button" className={`kcol kcol-folded ${alert ? "alert" : ""}`} onClick={onToggle} title={`Show ${title}${hint ? ` — ${hint}` : ""}`} aria-expanded={false}>
+        <span className="kcol-folded-count">{count}</span>
+        <span className="kcol-folded-title">{title}</span>
+        <span className="kcol-folded-chev">›</span>
+      </button>
+    );
+  }
   return (
     <section className="kcol">
       <div className="kcol-head" title={hint}>
         <span className="card-title" style={{ margin: 0 }}>{title}</span>
-        <span className="count">{count}</span>
+        <span className={`count ${alert ? "alert" : ""}`}>{count}</span>
+        <div className="spacer" />
+        <button type="button" className="btn ghost sm kcol-fold" onClick={onToggle} title={`Fold ${title} into a narrow strip`} aria-expanded>‹</button>
       </div>
       {actions && <div className="kcol-actions">{actions}</div>}
       <div className="kcol-body">{children}</div>

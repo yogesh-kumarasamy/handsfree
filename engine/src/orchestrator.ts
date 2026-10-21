@@ -42,6 +42,8 @@ export class Orchestrator {
   private running = new Map<string, Running | null>();
   /** git writes `.git/config` on worktree add/remove and allows one writer; tickets of one repo take turns. */
   private repoLock = keyedLock();
+  /** One tracker search per project at a time (timer poll vs. a manual retry). */
+  private projectLock = keyedLock();
   private stopRequested = new Set<string>();
   private takeoverRequested = new Set<string>();
   private pollTimer?: NodeJS.Timeout;
@@ -187,65 +189,98 @@ export class Orchestrator {
     this.pollTimer = setTimeout(() => void this.poll(), ms);
   }
 
+  private repoll = false;
+
   async poll() {
-    if (this.polling) return;
+    // "Check tickets now" while a poll runs must not be dropped: run again right after.
+    if (this.polling) {
+      this.repoll = true;
+      return;
+    }
     this.polling = true;
     try {
       if (!this.config.settings.paused) {
-        for (const p of this.config.projects.filter((x) => x.enabled)) {
-          try {
-            const tracker = this.trackers.trackerFor(p);
-            const issues = await tracker.search();
-            delete this.state.pollErrors[p.id];
-            const gate = p.tracker.pickupLabel.trim();
-            const found = new Set(issues.map((i) => i.key));
-            // Waiting tickets that left the query (unassigned, closed, triaged away) never started: drop them.
-            for (const t of Object.values(this.state.tickets)) {
-              if (t.projectId === p.id && t.status === "awaiting_pickup" && !found.has(t.key)) this.drop(t.key);
-            }
-            for (const i of issues) {
-              const ready = !gate || hasLabel(i.labels, gate);
-              const known = this.state.tickets[i.key];
-              if (known) {
-                // Each ticket is picked up once (until you Forget it); a waiting one starts when the label shows up.
-                if (known.status !== "awaiting_pickup") continue;
-                this.touch(known, { summary: i.summary || i.key, description: i.description, labels: i.labels, type: i.type });
-                if (ready) await this.pickUp(p, known, gate ? `“${gate}” label found on the ${tracker.noun}` : "pickup label no longer required");
-                continue;
-              }
-              this.state.tickets[i.key] = {
-                key: i.key,
-                projectId: p.id,
-                summary: i.summary || i.key,
-                description: i.description,
-                trackerId: i.id,
-                issueUrl: i.url,
-                status: "awaiting_pickup",
-                type: i.type,
-                labels: i.labels,
-                branch: renderName(p.naming.branch.template, { key: i.key, summary: i.summary || i.key, type: i.type }),
-                worktree: worktreePath(p, i.key),
-                agentIndex: 0,
-                attempts: [],
-                createdAt: now(),
-                updatedAt: now(),
-              };
-              this.log(i.key, `── HandsFree ▸ ${i.key}: ${i.summary}\nfound by ${tracker.noun} query for “${p.name}” at ${now()}\n`);
-              if (ready) await this.pickUp(p, this.state.tickets[i.key], gate ? `already has the “${gate}” label` : "this project picks up everything its query finds");
-              else this.log(i.key, `waiting for the “${gate}” label before starting work\n`);
-            }
-          } catch (e) {
-            this.state.pollErrors[p.id] = (e as Error).message;
-          }
-        }
+        for (const p of this.config.projects.filter((x) => x.enabled)) await this.pollProject(p);
         for (const id of Object.keys(this.state.pollErrors)) if (!this.project(id)?.enabled) delete this.state.pollErrors[id];
         this.state.lastPollAt = now();
       }
     } finally {
       this.polling = false;
-      this.schedulePoll();
+      if (this.repoll) {
+        this.repoll = false;
+        this.schedulePoll(200);
+      } else {
+        this.schedulePoll();
+      }
       this.pump();
     }
+  }
+
+  /**
+   * Run one project's tracker query now and report the outcome, so a fixed login can be confirmed without waiting for
+   * the next poll. Clears the project's poll error on success.
+   */
+  async pollProjectNow(id: string): Promise<{ ok: boolean; error?: string; found?: number; checkedAt: string }> {
+    const p = this.project(id);
+    if (!p) throw new Error("No such project.");
+    const found = await this.pollProject(p);
+    this.persist();
+    this.pump();
+    const error = this.state.pollErrors[id];
+    return { ok: !error, error, found, checkedAt: this.state.pollCheckedAt[id] };
+  }
+
+  /** One project's search → new tickets, pickups and drops. Errors land in `state.pollErrors`; returns the match count. */
+  private pollProject(p: ProjectConfig): Promise<number | undefined> {
+    // A manual retry and the timer poll can overlap; one search per project at a time keeps ticket creation single.
+    return this.projectLock(p.id, async () => {
+      try {
+        const tracker = this.trackers.trackerFor(p);
+        const issues = await tracker.search().finally(() => (this.state.pollCheckedAt[p.id] = now()));
+        delete this.state.pollErrors[p.id];
+        const gate = p.tracker.pickupLabel.trim();
+        const found = new Set(issues.map((i) => i.key));
+        // Waiting tickets that left the query (unassigned, closed, triaged away) never started: drop them.
+        for (const t of Object.values(this.state.tickets)) {
+          if (t.projectId === p.id && t.status === "awaiting_pickup" && !found.has(t.key)) this.drop(t.key);
+        }
+        for (const i of issues) {
+          const ready = !gate || hasLabel(i.labels, gate);
+          const known = this.state.tickets[i.key];
+          if (known) {
+            // Each ticket is picked up once (until you Forget it); a waiting one starts when the label shows up.
+            if (known.status !== "awaiting_pickup") continue;
+            this.touch(known, { summary: i.summary || i.key, description: i.description, labels: i.labels, type: i.type });
+            if (ready) await this.pickUp(p, known, gate ? `“${gate}” label found on the ${tracker.noun}` : "pickup label no longer required");
+            continue;
+          }
+          this.state.tickets[i.key] = {
+            key: i.key,
+            projectId: p.id,
+            summary: i.summary || i.key,
+            description: i.description,
+            trackerId: i.id,
+            issueUrl: i.url,
+            status: "awaiting_pickup",
+            type: i.type,
+            labels: i.labels,
+            branch: renderName(p.naming.branch.template, { key: i.key, summary: i.summary || i.key, type: i.type }),
+            worktree: worktreePath(p, i.key),
+            agentIndex: 0,
+            attempts: [],
+            createdAt: now(),
+            updatedAt: now(),
+          };
+          this.log(i.key, `── HandsFree ▸ ${i.key}: ${i.summary}\nfound by ${tracker.noun} query for “${p.name}” at ${now()}\n`);
+          if (ready) await this.pickUp(p, this.state.tickets[i.key], gate ? `already has the “${gate}” label` : "this project picks up everything its query finds");
+          else this.log(i.key, `waiting for the “${gate}” label before starting work\n`);
+        }
+        return issues.length;
+      } catch (e) {
+        this.state.pollErrors[p.id] = (e as Error).message;
+        return undefined;
+      }
+    });
   }
 
   /** Waiting → queued, and move the issue to the project's in-progress status. A failed move is logged, never blocks the work. */

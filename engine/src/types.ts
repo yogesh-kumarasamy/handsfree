@@ -337,6 +337,8 @@ export interface EngineState {
   lastPollAt?: string;
   nextPollAt?: string;
   pollErrors: Record<string, string>;
+  /** Per project id: when its tracker query last ran (success or failure). */
+  pollCheckedAt: Record<string, string>;
   lastPrCheckAt?: string;
   nextPrCheckAt?: string;
   /** Per ticket key: the last `gh` error from the PR check. */

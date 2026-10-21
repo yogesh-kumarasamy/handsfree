@@ -207,6 +207,7 @@ export function migrateState(raw: Partial<EngineState> | undefined, cfg: Config)
   return {
     tickets,
     pollErrors: raw?.pollErrors || {},
+    pollCheckedAt: raw?.pollCheckedAt || {},
     prCheckErrors: raw?.prCheckErrors || {},
     lastPollAt: raw?.lastPollAt,
     nextPollAt: raw?.nextPollAt,
