@@ -11,7 +11,7 @@ const MAX_SCAN = 64 * 1024;
 
 /**
  * The last top-level JSON object/array in a string: the whole string, a ```json fence, or the last
- * balanced `{…}`/`[…]` (string-aware depth scan, linear time, input capped at the last 64 KB).
+ * balanced `{…}`/`[…]` (string-aware depth scan, one pass, input capped at the last 64 KB).
  */
 export function lastJson(s: string): any {
   const t = (s.length > MAX_SCAN ? s.slice(-MAX_SCAN) : s).trim();

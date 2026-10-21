@@ -1,15 +1,15 @@
 # HandsFree
 
-A Mac app that picks up your tickets (Jira, GitHub Issues or Linear), works each one in its own git worktree with a chain of AI agents, and opens a draft PR. Nothing to watch until the PR exists.
+A Mac app that picks up your tickets (Jira or GitHub Issues), works each one in its own git worktree with a chain of AI agents, and opens a draft PR. Nothing to watch until the PR exists.
 
 ```
-Tracker query (Jira/acli · GitHub/gh · Linear/MCP) ─▶ .worktrees/<KEY> ─▶ Agent 1 ──fails / rate-limited──▶ Agent 2 … ─▶ commit
+Tracker query (Jira/acli · GitHub/gh) ─▶ .worktrees/<KEY> ─▶ Agent 1 ──fails / rate-limited──▶ Agent 2 … ─▶ commit
                                                                      ─▶ git push ─▶ gh pr create --draft ─▶ ticket comment with PR link
 PR open ─▶ checked every few minutes: draft/ready, CI, reviews
    CI fails   ─▶ failing logs ─▶ agent chain again in the same worktree ─▶ push (up to N rounds)
    CI passes  ─▶ "ready for review" notification (once, published PRs only)
    approved   ─▶ "waiting to be merged" nudge after N minutes
-   merged     ─▶ worktree removed ─▶ ticket moved to done (Jira "Done" · GitHub closed · Linear "Done") ─▶ comment with the PR link
+   merged     ─▶ worktree removed ─▶ ticket moved to done (Jira "Done" · GitHub closed) ─▶ comment with the PR link
    CI passes / approved too long ─▶ collab message to the project's channel (Setmore, once each)
 ```
 
@@ -35,7 +35,6 @@ claude --version; grok --version                         # your agents, logged i
 # redirect http://127.0.0.1:47831/oauth/callback) — ask the auth team, paste it in Settings → Accounts.
 # The client must be allowed the scopes HandsFree requests, above all setmore.apis-internal.fullaccess
 # (the MCP server refuses every tool call without it) and awapis.chat.streams.push (send_message).
-# Linear projects: Settings → Accounts → Linear → Log in (HandsFree registers itself with Linear; no client id).
 ```
 
 ## Run it
@@ -57,8 +56,7 @@ Other commands: `npm run test:engine` (engine e2e test), `npm run engine` (engin
 2. **Tracker.** Pick where tickets come from and press **Test query**. Each ticket is picked up once; *Forget* on the dashboard lets it be picked up again.
    - **Jira** (default): a JQL, run through `acli` with the login on your Mac. Keys look like `ABC-123`.
    - **GitHub Issues**: a `gh issue list --search` filter, e.g. `assignee:@me label:handsfree`, on the repo you set (empty = the project's remote, if it's on github.com). Keys look like `<repo-name>#12`; two projects on repos with the same name would share keys, so keep their filters apart.
-   - **Linear**: an optional text filter plus an assignee (`me` by default), through Linear's MCP server (`https://mcp.linear.app/mcp`). Log in once in Settings → Accounts → Linear. Keys are Linear's identifiers (`ENG-123`).
-   - **Status on merge**: when the PR merges, the ticket is moved there (Jira default "Done"; GitHub: any value closes the issue as completed; Linear default "Done"). Leave it empty to never move tickets. A failed move is logged and notified; the merge is still handled.
+   - **Status on merge**: when the PR merges, the ticket is moved there (Jira default "Done"; GitHub: any value closes the issue as completed). Leave it empty to never move tickets. A failed move is logged and notified; the merge is still handled.
 3. **MCP servers.** Paste the project's `mcp.json`. It's written to `.handsfree/mcp.json` in every worktree and passed to agents as `{mcp_file}`.
 4. **Agent chain.** Up to 4, top to bottom. The next agent takes over in the same worktree when one exits non-zero, matches a token-exhaustion pattern in its last output, times out, or finishes without changes.
 5. **Save & activate.** It starts on the next check (Settings → *Check tickets every*), or press **Check tickets now**.

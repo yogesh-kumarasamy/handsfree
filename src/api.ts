@@ -50,10 +50,6 @@ export interface Api {
   /** Starts the loopback OAuth flow; open the returned URL in the browser. */
   setmoreLogin(): Promise<{ url: string }>;
   setmoreLogout(): Promise<void>;
-  linearStatus(): Promise<AccountStatus>;
-  /** Starts the Linear login (registers HandsFree with Linear the first time); open the URL in the browser. */
-  linearLogin(): Promise<{ url: string }>;
-  linearLogout(): Promise<void>;
   testTracker(project: ProjectConfig): Promise<{ issues: FoundIssue[]; error?: string; raw?: string }>;
   repoInfo(path: string): Promise<RepoInfo>;
   doctor(): Promise<DoctorItem[]>;
@@ -128,9 +124,6 @@ function createHttpApi(base: string, token: string): Api {
     setmoreStatus: () => call("/api/accounts/setmore"),
     setmoreLogin: () => action("/api/accounts/setmore/login", {}),
     setmoreLogout: () => call("/api/accounts/setmore/logout", "POST"),
-    linearStatus: () => call("/api/accounts/linear"),
-    linearLogin: () => action("/api/accounts/linear/login", {}),
-    linearLogout: () => call("/api/accounts/linear/logout", "POST"),
     testTracker: (project) => call("/api/test-tracker", "POST", { project }),
     repoInfo: (path) => call("/api/repo-info", "POST", { path }),
     doctor: () => call("/api/doctor"),

@@ -57,7 +57,7 @@ test("normalizeProject gives routines: [] and normalizeRoutine fills defaults an
 
 test("normalizeProject: legacy Jira fields migrate into tracker", () => {
   const p = normalizeProject({ id: "p", name: "P", jql: "project = X", jiraSearchCommand: "acli custom {jql}", jiraCommentCommand: "-" });
-  assert.deepEqual(p.tracker, { kind: "jira", query: "project = X", searchCommand: "acli custom {jql}", commentCommand: "-", transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo" });
+  assert.deepEqual(p.tracker, { kind: "jira", query: "project = X", searchCommand: "acli custom {jql}", commentCommand: "-", transitionCommand: "", doneStatus: "Done", repo: "" });
   assert.equal("jql" in p, false);
 });
 
@@ -69,14 +69,32 @@ test("normalizeProject: a legacy empty Jira comment command keeps meaning 'never
 
 test("normalizeProject: tracker defaults per kind; unknown kind falls back to jira", () => {
   assert.equal(normalizeProject({ tracker: { kind: "github", query: "label:hf" } }).tracker.doneStatus, "closed");
-  assert.equal(normalizeProject({ tracker: { kind: "linear" } }).tracker.doneStatus, "Done");
-  assert.equal(normalizeProject({ tracker: { kind: "linear" } }).tracker.linearState, "Todo");
-  assert.equal(normalizeProject({ tracker: { kind: "linear", linearState: "" } }).tracker.linearState, "", "an explicitly empty status stays empty");
+  assert.equal(normalizeProject({ tracker: { kind: "jira", query: "x" } }).tracker.doneStatus, "Done");
   assert.equal(normalizeProject({ tracker: { kind: "nope" } }).tracker.kind, "jira");
 });
 
-test("migrateState: accounts.linear defaults to logged out", () => {
-  assert.deepEqual(migrateState({ tickets: {} }, { version: 1, settings: {}, projects: [] }).accounts.linear, { loggedIn: false });
+test("normalizeProject: a saved Linear project loads as a disabled Jira project with no query and a notice", () => {
+  const raw = { id: "p", name: "Lin", enabled: true, tracker: { kind: "linear", query: "bug", linearAssignee: "me", linearState: "Todo", doneStatus: "Shipped" } };
+  const p = normalizeProject(raw);
+  assert.equal(p.enabled, false);
+  assert.deepEqual(p.tracker, { kind: "jira", query: "", searchCommand: "", commentCommand: "", transitionCommand: "", doneStatus: "Done", repo: "" });
+  assert.equal(p.trackerNotice, "Linear is no longer supported, pick Jira or GitHub");
+  // Saved and loaded again (now Jira): stays disabled with the notice until the tracker is edited.
+  const again = normalizeProject(JSON.parse(JSON.stringify(p)));
+  assert.equal(again.enabled, false);
+  assert.equal(again.trackerNotice, p.trackerNotice);
+  // Other projects are untouched.
+  const jira = normalizeProject({ id: "q", tracker: { kind: "jira", query: "project = X" } });
+  assert.equal(jira.enabled, true);
+  assert.equal("trackerNotice" in jira, false);
+});
+
+test("normalizeSettings / migrateState: old accounts.linear keys load and are dropped", () => {
+  const s = normalizeSettings({ accounts: { setmore: { clientId: "c" }, linear: { mcpUrl: "https://mcp.linear.app/mcp", redirectPort: 47832 } } });
+  assert.deepEqual(Object.keys(s.accounts), ["setmore"]);
+  assert.equal(s.accounts.setmore.clientId, "c");
+  const st = migrateState({ tickets: {}, accounts: { setmore: { loggedIn: true }, linear: { loggedIn: true } } }, { version: 1, settings: {}, projects: [] });
+  assert.deepEqual(st.accounts, { setmore: { loggedIn: true } });
 });
 
 test("normalizeProject: the old Claude preset command is upgraded to the stream-json input form", () => {
@@ -104,7 +122,7 @@ test("normalizeProject: naming defaults to HandsFree's old names with no pattern
 
 test("normalizeProject: the old default Jira search command gains issuetype so {type} can be derived", () => {
   const old = 'acli jira workitem search --jql {jql} --fields "key,summary,description" --limit 50 --json';
-  const tracker = { kind: "jira", query: "project = X", searchCommand: old, commentCommand: "", transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "" };
+  const tracker = { kind: "jira", query: "project = X", searchCommand: old, commentCommand: "", transitionCommand: "", doneStatus: "Done", repo: "" };
   const p = normalizeProject({ id: "p1", tracker });
   assert.equal(p.tracker.searchCommand, 'acli jira workitem search --jql {jql} --fields "key,summary,description,issuetype" --limit 50 --json');
   const custom = normalizeProject({ id: "p1", tracker: { ...tracker, searchCommand: "mytool search {jql}" } });

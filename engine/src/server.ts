@@ -175,17 +175,6 @@ export function startServer(o: Orchestrator, port: number, token: string) {
         case "POST /api/accounts/setmore/logout":
           await o.messaging.logout();
           return send(200, {});
-        case "GET /api/accounts/linear":
-          return send(200, o.trackers.status());
-        case "POST /api/accounts/linear/login":
-          try {
-            return send(200, { url: await o.trackers.loginUrl() });
-          } catch (e) {
-            return send(400, { error: (e as Error).message });
-          }
-        case "POST /api/accounts/linear/logout":
-          await o.trackers.logout();
-          return send(200, {});
         case "POST /api/check-prs-now":
           o.checkPrsNow();
           return send(200, {});

@@ -85,15 +85,15 @@ export function worktreeDirName(key: string): string {
   return key.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "ticket";
 }
 
-/** Label names out of a tracker's label list: ["bug"], [{name:"bug"}] or {nodes:[{name}]} (Linear). */
+/** Label names out of a tracker's label list: ["bug"] or [{name:"bug"}]. */
 export function labelNames(raw: unknown): string[] {
-  const list = Array.isArray(raw) ? raw : Array.isArray((raw as { nodes?: unknown[] })?.nodes) ? (raw as { nodes: unknown[] }).nodes : [];
+  const list = Array.isArray(raw) ? raw : [];
   return list
     .map((l) => (typeof l === "string" ? l : typeof (l as { name?: unknown })?.name === "string" ? (l as { name: string }).name : ""))
     .filter(Boolean);
 }
 
-/** Tracker issue type (Jira "Bug", "Story"…) or label list (GitHub, Linear) → branch type keyword. */
+/** Tracker issue type (Jira "Bug", "Story"…) or label list (GitHub) → branch type keyword. */
 export function issueTypeOf(raw: string | string[] | undefined): string {
   const names = (Array.isArray(raw) ? raw : raw ? [raw] : []).map((x) => String(x).toLowerCase());
   const has = (re: RegExp) => names.some((n) => re.test(n));

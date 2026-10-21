@@ -636,7 +636,7 @@ function FirstRun({ onNewProject }: { onNewProject: () => void }) {
         <Logo size={56} />
         <h2>Let your tickets walk themselves to a PR</h2>
         <p>
-          Add a project and HandsFree will watch your tracker (Jira, GitHub Issues or Linear), give each ticket its own git worktree, run your agents
+          Add a project and HandsFree will watch your tracker (Jira or GitHub Issues), give each ticket its own git worktree, run your agents
           one after another until one succeeds, and open a draft PR.
         </p>
         <button className="btn primary" onClick={onNewProject}>{Icon.plus} Create your first project</button>

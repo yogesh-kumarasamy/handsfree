@@ -105,25 +105,6 @@ fs.writeFileSync(path.join(data, "config.json"), JSON.stringify({ version: 1, se
 const validTokens = new Set();
 const auth = await startFakeAuth({ validTokens });
 const mcp = await startFakeMcp({ validTokens });
-// Fake Linear: an OAuth server that only accepts dynamically registered clients, and an MCP server with Linear-like tools.
-const linTokens = new Set();
-const linAuth = await startFakeAuth({ validTokens: linTokens, requireRegistered: true });
-const linText = (o) => ({ content: [{ type: "text", text: JSON.stringify(o) }] });
-const linIssues = [
-  { id: "uuid-1", identifier: "ENG-7", title: "Add greeting", description: "Say hi", url: "https://linear.app/x/ENG-7", state: { name: "Todo", type: "unstarted" } },
-  { id: "uuid-0", identifier: "ENG-6", title: "Shipped long ago", state: { name: "Done", type: "completed" } },
-  { id: "uuid-9", identifier: "ENG-9", title: "Archived", state: { name: "Todo", type: "unstarted" }, archivedAt: "2026-01-01T00:00:00Z" },
-];
-const linTools = {
-    // Answers with every assigned issue, done and archived ones included: HandsFree must drop those itself.
-    list_issues: {
-      inputSchema: { properties: { assignee: {}, state: { type: "string" }, query: {}, limit: {} } },
-      handler: () => linText({ issues: linIssues }),
-    },
-    create_comment: { inputSchema: { properties: { issueId: {}, body: {} } }, handler: (a) => linText({ ok: true, got: a }) },
-    update_issue: { inputSchema: { properties: { id: {}, state: {} } }, handler: (a) => linText({ ok: true, got: a }) },
-};
-const linMcp = await startFakeMcp({ validTokens: linTokens, tools: linTools });
 const cbPort = 49000 + Math.floor(Math.random() * 500);
 
 const port = 48000 + Math.floor(Math.random() * 1000);
@@ -613,7 +594,7 @@ try {
 
   // ---- A GitHub Issues project on the same repo: pick-up, PR, comment via gh, close on merge
   const fakeClaudeOnly = [{ id: "c1", name: "Claude Code", command: "fakeclaude -p {prompt_file} --mcp-config {mcp_file}", enabled: true, exhaustionPatterns: ["rate.?limit"] }];
-  const ghProject = { ...project, id: "p2", name: "GH", messaging: undefined, tracker: { kind: "github", query: "label:hf", searchCommand: "", commentCommand: "", transitionCommand: "", doneStatus: "closed", repo: "acme/repo", linearAssignee: "" }, agents: fakeClaudeOnly };
+  const ghProject = { ...project, id: "p2", name: "GH", messaging: undefined, tracker: { kind: "github", query: "label:hf", searchCommand: "", commentCommand: "", transitionCommand: "", doneStatus: "closed", repo: "acme/repo" }, agents: fakeClaudeOnly };
   await api("/api/config", "PUT", { ...(await api("/api/config")), projects: [project, ghProject] });
   await api("/api/poll-now", "POST");
   const ghT = await waitFor(async () => {
@@ -635,58 +616,23 @@ try {
   assert.match(fs.readFileSync(path.join(root, "ghclose.log"), "utf8"), /issue close 5 --repo acme\/repo --reason completed/);
   assert.match((await api(`/api/tickets/${encodeURIComponent("repo#5")}/log`)).log, /Moved the GitHub issue to “closed”/);
 
-  // ---- A Linear project: not logged in → poll error; log in (dynamic registration); pick-up, comment, update_issue on merge
+  // ---- A saved Linear project (tracker removed): loads disabled as Jira with a notice, isn't polled; the others keep polling
   const linProject = { ...ghProject, id: "p3", name: "Lin", tracker: { kind: "linear", query: "", searchCommand: "", commentCommand: "", transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo" } };
   const cfgL = await api("/api/config");
-  await api("/api/config", "PUT", { ...cfgL, settings: { ...cfgL.settings, accounts: { ...cfgL.settings.accounts, linear: { mcpUrl: linMcp.url, issuer: linAuth.issuer, redirectPort: cbPort + 1, scopes: "read write" } } }, projects: [project, ghProject, linProject] });
-  assert.equal((await api("/api/accounts/linear")).loggedIn, false);
+  const savedL = await api("/api/config", "PUT", { ...cfgL, settings: { ...cfgL.settings, accounts: { ...cfgL.settings.accounts, linear: { mcpUrl: "https://mcp.linear.app/mcp" } } }, projects: [project, ghProject, linProject] });
+  const linSaved = savedL.projects.find((x) => x.id === "p3");
+  assert.equal(linSaved.enabled, false);
+  assert.equal(linSaved.tracker.kind, "jira");
+  assert.equal(linSaved.tracker.query, "");
+  assert.equal(linSaved.trackerNotice, "Linear is no longer supported, pick Jira or GitHub");
+  assert.equal("linear" in savedL.settings.accounts, false, "the old Linear account settings are dropped");
+  assert.equal((await fetch(`${base}/api/accounts/linear`, { headers: { "x-handsfree-token": token } })).status, 404);
+  const polledAt = (await api("/api/state")).lastPollAt;
   await api("/api/poll-now", "POST");
-  await waitFor(async () => /Not logged in to Linear/.test((await api("/api/state")).pollErrors?.p3 || ""), "Linear poll error before login");
-  const linLogin = await api("/api/accounts/linear/login", "POST", {});
-  assert.match(linLogin.url, new RegExp(`^${linAuth.issuer}/oauth2/auth\\?`));
-  assert.equal(linAuth.registrations.length, 1, "client registered dynamically");
-  assert.deepEqual(linAuth.registrations[0].redirect_uris, [`http://127.0.0.1:${cbPort + 1}/oauth/callback`]);
-  const linCb = (await fetch(linLogin.url, { redirect: "manual" })).headers.get("location");
-  assert.match(linCb, new RegExp(`^http://127\\.0\\.0\\.1:${cbPort + 1}/oauth/callback\\?code=`));
-  assert.equal((await fetch(linCb)).status, 200);
-  await waitFor(async () => (await api("/api/accounts/linear")).loggedIn, "linear logged in");
-  await api("/api/poll-now", "POST");
-  const linT = await waitFor(async () => {
-    const t = await ticket("ENG-7");
-    return t?.status === "pr_draft" && t.jiraCommented && t;
-  }, "ENG-7 pr_draft + commented");
-  assert.equal((await api("/api/state")).pollErrors?.p3, undefined, "poll error cleared after login");
-  assert.equal(linT.trackerId, "uuid-1");
-  assert.equal(linT.issueUrl, "https://linear.app/x/ENG-7");
-  const comment = linMcp.calls.find((c) => c.params?.name === "create_comment").params.arguments;
-  assert.equal(comment.issueId, "uuid-1");
-  assert.match(comment.body, new RegExp(`Linear issue: ${linT.prUrl}`));
-  assert.deepEqual(linMcp.calls.find((c) => c.params?.name === "list_issues").params.arguments, { assignee: "me", state: "Todo", limit: 50 });
-  const linState = await api("/api/state");
-  assert.ok(!linState.tickets["ENG-6"] && !linState.tickets["ENG-9"], "done and archived Linear issues are not picked up");
-  const linPrN = Number(linT.prUrl.split("/").pop());
-  prJson(linPrN, { state: "MERGED", isDraft: false, mergedAt: "2026-10-15T12:00:00Z" });
-  await checkPrs();
-  await waitFor(async () => (await ticket("ENG-7")).trackerDone === true, "ENG-7 trackerDone");
-  assert.deepEqual(linMcp.calls.find((c) => c.params?.name === "update_issue").params.arguments, { id: "uuid-1", state: "Done" });
-
-  // ---- A Linear server without update_issue: the merge is handled, and the ticket log says why the status didn't move
-  delete linTools.update_issue;
-  linIssues.push({ id: "uuid-8", identifier: "ENG-8", title: "Add farewell", url: "https://linear.app/x/ENG-8", state: { name: "Todo", type: "unstarted" } });
-  // A changed account setting rebuilds the Linear connection, so the tool list is fetched again.
-  const cfgL2 = await api("/api/config");
-  await api("/api/config", "PUT", { ...cfgL2, settings: { ...cfgL2.settings, accounts: { ...cfgL2.settings.accounts, linear: { ...cfgL2.settings.accounts.linear, scopes: "read write issues:create" } } } });
-  await api("/api/poll-now", "POST");
-  const eng8 = await waitFor(async () => {
-    const t = await ticket("ENG-8");
-    return t?.status === "pr_draft" && t.jiraCommented && t;
-  }, "ENG-8 pr_draft + commented");
-  prJson(Number(eng8.prUrl.split("/").pop()), { state: "MERGED", isDraft: false, mergedAt: "2026-10-15T13:00:00Z" });
-  await checkPrs();
-  await waitFor(async () => /· Linear issue: Linear has no update_issue tool; status left as is/.test((await api("/api/tickets/ENG-8/log")).log), "ENG-8 skip reason logged");
-  const eng8After = await ticket("ENG-8");
-  assert.equal(eng8After.status, "merged");
-  assert.notEqual(eng8After.trackerDone, true);
+  await waitFor(async () => (await api("/api/state")).lastPollAt !== polledAt, "poll after the Linear project loaded");
+  const afterL = await api("/api/state");
+  assert.equal(afterL.pollErrors?.p3, undefined, "the disabled Linear project is not polled");
+  assert.equal(afterL.pollErrors?.p2, undefined, "the GitHub project keeps polling");
 
   // ---- Naming conventions: branch, commit subjects and PR title come from the project's templates and must match its patterns
   const BRANCH_RE = "^dependabot|changeset|([A-Za-z]{1,10}-\\d+(\\/)(release|feature|hotfix|config|bug|spike|refactor|improvement)(\\/.*))|staging|main";
@@ -732,7 +678,7 @@ try {
   console.log("\n✅ e2e passed");
 } catch (e) {
   console.error("\n❌ e2e failed:", e.stack || e.message);
-  for (const k of ["DEMO-1", "DEMO-2", "repo#5", "ENG-7", "ENG-8", "routine-rt1"]) {
+  for (const k of ["DEMO-1", "DEMO-2", "repo#5", "routine-rt1"]) {
     try {
       console.error(`--- log ${k} ---\n` + fs.readFileSync(path.join(data, "logs", `${k.replace(/[^A-Za-z0-9_-]/g, "_")}.log`), "utf8"));
     } catch {}
@@ -741,7 +687,5 @@ try {
 } finally {
   await auth.close();
   await mcp.close();
-  await linAuth.close();
-  await linMcp.close();
   engine.kill("SIGTERM");
 }

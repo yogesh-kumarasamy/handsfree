@@ -1,5 +1,5 @@
 // A fake MCP server over streamable HTTP: bearer auth, sessions. Default tools are Setmore-like (list_channels,
-// two-call send_message); `tools: { name: { inputSchema, handler(args) → result } }` replaces them (e.g. a fake Linear).
+// two-call send_message); `tools: { name: { inputSchema, handler(args) → result } }` replaces them.
 import http from "node:http";
 
 export async function startFakeMcp({ validTokens = new Set(), sse = false, tools } = {}) {

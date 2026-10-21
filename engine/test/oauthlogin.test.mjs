@@ -18,7 +18,7 @@ function makeLogin(auth, o = {}) {
   const statuses = [];
   const p = o.port || port();
   const login = new LoopbackLogin({
-    name: "linear",
+    name: "setmore",
     issuer: () => auth.issuer,
     resource: () => "http://127.0.0.1:1/mcp",
     scopes: () => "read write",
