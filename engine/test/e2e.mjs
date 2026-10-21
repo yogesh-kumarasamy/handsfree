@@ -49,7 +49,7 @@ case "$1 $2" in
   "pr ready") echo "$@" >> "${root}/ready.log" ;;
   "run view") echo "$@" >> "${root}/runs.log"; echo "Run $3 ▸ job test"; echo "FAIL tests/greeting.test.js: expected hi, got hello" ;;
   "auth status") echo "Logged in to github.com as tester"; exit 0 ;;
-  "issue list") echo '[{"number":5,"title":"Add farewell","body":"Say bye","url":"https://github.com/acme/repo/issues/5"}]' ;;
+  "issue list") if [ -f "${root}/gh-issues.json" ]; then cat "${root}/gh-issues.json"; else echo '[{"number":5,"title":"Add farewell","body":"Say bye","url":"https://github.com/acme/repo/issues/5"}]'; fi ;;
   "issue comment") echo "$@" >> "${root}/ghcomments.log" ;;
   "issue close") echo "$@" >> "${root}/ghclose.log" ;;
   "issue edit") if [ -f "${root}/ghlabel" ]; then echo "$@" >> "${root}/ghedit.log"; else echo "could not add label: 'PICKUP_READY' not found" >&2; exit 1; fi ;;
@@ -666,6 +666,28 @@ try {
   assert.match(fs.readFileSync(path.join(root, "ghclose.log"), "utf8"), /issue close 5 --repo acme\/repo --reason completed/);
   assert.match((await api(`/api/tickets/${encodeURIComponent("repo#5")}/log`)).log, /Moved the GitHub issue to “closed”/);
   assert.match((await api(`/api/tickets/${encodeURIComponent("repo#5")}/log`)).log, /Picked up: marked pickup ready from the dashboard/);
+
+  // ---- Removing the pickup label sends a ticket without a PR (here: failed) back to Assigned; one with a PR stays put
+  const issue7 = (labels) => JSON.stringify([
+    { number: 5, title: "Add farewell", body: "Say bye", url: "https://github.com/acme/repo/issues/5" },
+    { number: 7, title: "Flaky thing", body: "", url: "https://github.com/acme/repo/issues/7", labels: labels.map((name) => ({ name })) },
+  ]);
+  fs.writeFileSync(path.join(root, "gh-issues.json"), issue7(["PICKUP_READY"]));
+  const failingGh = { ...ghProject, agents: [{ id: "f1", name: "Broken", command: "false", enabled: true, exhaustionPatterns: [] }] };
+  await api("/api/config", "PUT", { ...(await api("/api/config")), projects: [project, failingGh] });
+  await api("/api/poll-now", "POST");
+  await waitFor(async () => (await ticket("repo#7"))?.status === "failed", "repo#7 picked up (label present) and failed");
+  fs.writeFileSync(path.join(root, "gh-issues.json"), issue7([]));
+  await api("/api/projects/p2/poll", "POST", {});
+  const back = await ticket("repo#7");
+  assert.equal(back.status, "awaiting_pickup", "label removed → back to Assigned");
+  assert.equal(back.error, undefined);
+  assert.deepEqual(back.labels, undefined);
+  assert.match((await api(`/api/tickets/${encodeURIComponent("repo#7")}/log`)).log, /Back to Assigned: the “PICKUP_READY” label was removed/);
+  assert.equal((await ticket("repo#5")).status, "merged", "a ticket with a PR is never sent back");
+  await api(`/api/tickets/${encodeURIComponent("repo#7")}/forget`, "POST");
+  fs.unlinkSync(path.join(root, "gh-issues.json"));
+  await api("/api/config", "PUT", { ...(await api("/api/config")), projects: [project, ghProject] });
 
   // ---- A Linear project: not logged in → poll error; log in (dynamic registration); pick-up, comment, update_issue on merge
   const linProject = { ...ghProject, id: "p3", name: "Lin", tracker: { kind: "linear", query: "", searchCommand: "", commentCommand: "", transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo", pickupLabel: "", inProgressStatus: "" } };

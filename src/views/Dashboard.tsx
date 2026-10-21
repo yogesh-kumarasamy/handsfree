@@ -94,6 +94,8 @@ export function Dashboard({
   const approved = by("approved");
   const mergedAll = by("merged").filter((t) => showClosed || t.status !== "done");
   const merged = showAllMerged ? mergedAll : mergedAll.slice(0, 20);
+  // Closed = PR closed unmerged, or a ticket cleaned up before it had a PR: hidden by default, so say how many there are.
+  const closedCount = by("merged").filter((t) => t.status === "done").length;
   const n = (s: TicketStatus) => sorted.filter((t) => t.status === s).length;
   const exhausted = sorted.filter((t) => t.status === "pr_ci_failed" && (t.pr?.fixRounds ?? 0) >= (projects[t.projectId]?.ciFixMaxRounds ?? 0)).length;
 
@@ -365,7 +367,7 @@ export function Dashboard({
               count={mergedAll.length}
               actions={
                 <label className="row small muted" style={{ cursor: "pointer", gap: 4 }}>
-                  <input type="checkbox" checked={showClosed} onChange={(e) => setShowClosed(e.target.checked)} /> Show closed
+                  <input type="checkbox" checked={showClosed} onChange={(e) => setShowClosed(e.target.checked)} /> Show closed{closedCount ? ` (${closedCount})` : ""}
                 </label>
               }
             >

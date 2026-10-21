@@ -34,6 +34,8 @@ import {
 
 const now = () => new Date().toISOString();
 const TAIL_FOR_PATTERNS = 6000;
+/** Statuses a ticket without a PR can be sent back to Assigned from (by removing its pickup label). */
+const RETRIAGE: readonly Ticket["status"][] = ["queued", "failed", "stopped", "done"];
 
 export class Orchestrator {
   config: Config = loadConfig();
@@ -249,7 +251,26 @@ export class Orchestrator {
           const known = this.state.tickets[i.key];
           if (known) {
             // Each ticket is picked up once (until you Forget it); a waiting one starts when the label shows up.
-            if (known.status !== "awaiting_pickup") continue;
+            if (known.status !== "awaiting_pickup") {
+              // Taking the label off a ticket that never got a PR (queued, failed, stopped, cleaned up) sends it back to triage.
+              if (gate && !ready && !known.prUrl && RETRIAGE.includes(known.status) && !this.running.has(known.key)) {
+                this.touch(known, {
+                  status: "awaiting_pickup",
+                  labels: i.labels,
+                  summary: i.summary || i.key,
+                  description: i.description,
+                  type: i.type,
+                  error: undefined,
+                  agentIndex: 0,
+                  currentAgent: undefined,
+                  slow: undefined,
+                  // Picked up again later → moved to in progress again (you may have moved it back).
+                  trackerStarted: undefined,
+                });
+                this.log(known.key, `\n↩ Back to Assigned: the “${gate}” label was removed on the ${tracker.noun}\n`);
+              }
+              continue;
+            }
             this.touch(known, { summary: i.summary || i.key, description: i.description, labels: i.labels, type: i.type });
             if (ready) await this.pickUp(p, known, gate ? `“${gate}” label found on the ${tracker.noun}` : "pickup label no longer required");
             continue;
