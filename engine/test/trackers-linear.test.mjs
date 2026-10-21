@@ -31,7 +31,7 @@ test("LinearTracker: schema-driven args, keys from identifier, comment and trans
   try {
     const l = mk(mcp);
     const found = await l.search();
-    assert.deepEqual(found, [{ key: "ENG-7", summary: "Add greeting", description: "Say hi", id: "uuid-1", url: "https://linear.app/x/ENG-7", type: "bug" }]);
+    assert.deepEqual(found, [{ key: "ENG-7", summary: "Add greeting", description: "Say hi", id: "uuid-1", url: "https://linear.app/x/ENG-7", type: "bug", labels: ["Bug"] }]);
     const list = mcp.calls.find((c) => c.params?.name === "list_issues").params.arguments;
     assert.deepEqual(list, { assignee: "me", query: "greeting", limit: 50 });
     assert.deepEqual(await l.comment({ key: "ENG-7", trackerId: "uuid-1" }, "PR opened"), { skipped: false });
@@ -141,5 +141,24 @@ test("LinearTracker: skip reasons — no create_comment tool, update_issue witho
     assert.equal(mcp.calls.filter((c) => c.params?.name === "create_comment" || c.params?.name === "update_issue").length, 0);
   } finally {
     await mcp.close();
+  }
+});
+
+test("LinearTracker.addLabel: update_issue with the issue's labels plus the new one; no labels argument → skipped with a reason", async () => {
+  const withLabels = { ...toolsA, update_issue: { inputSchema: { properties: { id: {}, state: {}, labels: { type: "array" } } }, handler: (a) => ({ content: [{ type: "text", text: JSON.stringify({ ok: true, got: a }) }] }) } };
+  const mcp = await startFakeMcp({ validTokens: new Set(["t"]), tools: withLabels });
+  try {
+    assert.deepEqual(await mk(mcp).addLabel({ key: "ENG-7", trackerId: "uuid-1", labels: ["Bug"] }, "PICKUP_READY"), { skipped: false });
+    assert.deepEqual(mcp.calls.find((c) => c.params?.name === "update_issue").params.arguments, { id: "uuid-1", labels: ["Bug", "PICKUP_READY"] });
+  } finally {
+    await mcp.close();
+  }
+  const mcp2 = await startFakeMcp({ validTokens: new Set(["t"]), tools: toolsA });
+  try {
+    const r = await mk(mcp2).addLabel({ key: "ENG-7", trackerId: "uuid-1" }, "PICKUP_READY");
+    assert.equal(r.skipped, true);
+    assert.match(r.reason, /no labels argument/);
+  } finally {
+    await mcp2.close();
   }
 });

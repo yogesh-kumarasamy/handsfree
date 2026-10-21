@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { GithubTracker, parseGithubIssues, parseRepoFromRemote } from "../dist/test/trackers/github.js";
+import { hasLabel } from "../dist/test/trackers/adapter.js";
 
 test("parseRepoFromRemote: ssh, https, ssh://, non-github", () => {
   assert.equal(parseRepoFromRemote("git@github.com:acme/repo.git"), "acme/repo");
@@ -64,4 +65,31 @@ test("GithubTracker: repo derived from the project's remote; '-' comment command
   assert.equal(found[0].key, "widgets#3");
   assert.match(calls[1], /--repo 'acme\/widgets'/);
   assert.deepEqual(await g.comment({ key: "widgets#3", trackerId: "3" }, "x"), { skipped: true });
+});
+
+test("parseGithubIssues: label names are kept; hasLabel ignores case", () => {
+  const [i] = parseGithubIssues(JSON.stringify([{ number: 1, title: "A", labels: [{ name: "pickup_ready" }, { name: "bug" }] }]), "repo");
+  assert.deepEqual(i.labels, ["pickup_ready", "bug"]);
+  assert.equal(hasLabel(i.labels, "PICKUP_READY"), true);
+  assert.equal(hasLabel(i.labels, "ready"), false);
+  assert.equal(hasLabel(undefined, "PICKUP_READY"), false);
+  assert.equal(hasLabel(["x"], " "), false, "an empty label never matches");
+});
+
+test("GithubTracker.addLabel: gh issue edit --add-label; a missing repo label is created, then the edit retried", async () => {
+  const calls = [];
+  let created = false;
+  const run = async (cmd) => {
+    calls.push(cmd);
+    if (cmd.startsWith("gh label create")) created = true;
+    if (cmd.startsWith("gh issue edit") && !created) return { code: 1, stdout: "", stderr: "could not add label: 'PICKUP_READY' not found", timedOut: false };
+    return { code: 0, stdout: "", stderr: "", timedOut: false };
+  };
+  const p = { repoPath: "", remote: "origin", tracker: { kind: "github", query: "label:hf", searchCommand: "", commentCommand: "", transitionCommand: "", doneStatus: "closed", repo: "acme/repo", linearAssignee: "" } };
+  assert.deepEqual(await new GithubTracker(p, run).addLabel({ key: "repo#12", trackerId: "12" }, "PICKUP_READY"), { skipped: false });
+  assert.equal(calls[0], "gh issue edit '12' --repo 'acme/repo' --add-label 'PICKUP_READY'");
+  assert.match(calls[1], /^gh label create 'PICKUP_READY' --repo 'acme\/repo' .*--force$/);
+  assert.equal(calls[2], calls[0]);
+  const denied = async () => ({ code: 1, stdout: "", stderr: "HTTP 403: Resource not accessible", timedOut: false });
+  await assert.rejects(new GithubTracker(p, denied).addLabel({ key: "repo#12", trackerId: "12" }, "PICKUP_READY"), /403/);
 });

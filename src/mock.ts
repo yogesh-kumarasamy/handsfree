@@ -50,7 +50,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
               repoPath: "/Users/yogesh/code/chatsupport-web",
               baseBranch: "main",
               remote: "origin",
-              tracker: { kind: "jira", query: 'project = CSW AND assignee = currentUser() AND status = "To Do" ORDER BY priority DESC', searchCommand: DEFAULT_JIRA_SEARCH, commentCommand: DEFAULT_JIRA_COMMENT, transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo" },
+              tracker: { kind: "jira", query: 'project = CSW AND assignee = currentUser() AND status = "To Do" ORDER BY priority DESC', searchCommand: DEFAULT_JIRA_SEARCH, commentCommand: DEFAULT_JIRA_COMMENT, transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo", pickupLabel: "PICKUP_READY", inProgressStatus: "In Progress" },
               mcpJson: JSON.stringify(
                 {
                   mcpServers: {
@@ -78,7 +78,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
               repoPath: "/Users/yogesh/code/setmore-api",
               baseBranch: "develop",
               remote: "origin",
-              tracker: { kind: "jira", query: "project = SET AND assignee = currentUser() AND labels = handsfree", searchCommand: DEFAULT_JIRA_SEARCH, commentCommand: DEFAULT_JIRA_COMMENT, transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo" },
+              tracker: { kind: "jira", query: "project = SET AND assignee = currentUser() AND labels = handsfree", searchCommand: DEFAULT_JIRA_SEARCH, commentCommand: DEFAULT_JIRA_COMMENT, transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo", pickupLabel: "PICKUP_READY", inProgressStatus: "In Progress" },
               mcpJson: '{\n  "mcpServers": {}\n}',
               agents: agents(["Grok", "Claude Code"]),
               promptExtra: "",
@@ -159,6 +159,8 @@ function demoState(scenario: DemoOptions["scenario"]): EngineState {
       createdAt: ago(42),
     }),
     t({ key: "CSW-1425", projectId: "p1", summary: "Persist agent's last-used canned response", status: "queued", createdAt: ago(3) }),
+    t({ key: "CSW-1431", projectId: "p1", summary: "Widget is “slow sometimes” — needs repro steps", status: "awaiting_pickup", labels: ["support"], issueUrl: "https://example.atlassian.net/browse/CSW-1431", createdAt: ago(40) }),
+    t({ key: "CSW-1433", projectId: "p1", summary: "Add keyboard shortcut to close the chat panel", status: "awaiting_pickup", createdAt: ago(12) }),
     t({
       key: "CSW-1398",
       projectId: "p1",
@@ -378,6 +380,13 @@ export function createMockApi(opts: DemoOptions): Api {
       }
     },
     fixCi: ok,
+    pickupReady: async (k) => {
+      const t = state.tickets[k];
+      if (t?.status === "awaiting_pickup") {
+        state = { ...state, tickets: { ...state.tickets, [k]: { ...t, status: "queued", labels: [...(t.labels || []), "PICKUP_READY"] } } };
+        emit({ type: "state", state });
+      }
+    },
     retry: ok,
     stop: ok,
     cleanup: ok,

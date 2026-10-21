@@ -5,6 +5,8 @@ import {
   DEFAULT_TEMPLATES,
   DEFAULT_EXHAUSTION_PATTERNS,
   DEFAULT_DONE_STATUS,
+  DEFAULT_IN_PROGRESS_STATUS,
+  DEFAULT_PICKUP_LABEL,
   DEFAULT_GITHUB_CLOSE,
   DEFAULT_GITHUB_COMMENT,
   DEFAULT_GITHUB_SEARCH,
@@ -105,6 +107,8 @@ function blankProject(): ProjectConfig {
       repo: "",
       linearAssignee: "me",
       linearState: "Todo",
+      pickupLabel: DEFAULT_PICKUP_LABEL,
+      inProgressStatus: DEFAULT_IN_PROGRESS_STATUS.jira,
     },
     mcpJson: '{\n  "mcpServers": {}\n}',
     agents: AGENT_PRESETS.map((a) => ({ ...a, id: uid(), exhaustionPatterns: [...a.exhaustionPatterns] })),
@@ -471,7 +475,7 @@ function ProjectEditor({
                   value={tk.kind}
                   onChange={(e) => {
                     const kind = e.target.value as TrackerKind;
-                    setTracker({ kind, doneStatus: DEFAULT_DONE_STATUS[kind], searchCommand: "", commentCommand: "", transitionCommand: "" });
+                    setTracker({ kind, doneStatus: DEFAULT_DONE_STATUS[kind], inProgressStatus: DEFAULT_IN_PROGRESS_STATUS[kind], searchCommand: "", commentCommand: "", transitionCommand: "" });
                     setJira(undefined);
                   }}
                 >
@@ -526,6 +530,20 @@ function ProjectEditor({
                 ))}
               </div>
             )}
+            <div className="grid3">
+              <div className="field">
+                <label>Pickup label</label>
+                <input className="input code" value={tk.pickupLabel} placeholder={DEFAULT_PICKUP_LABEL} onChange={(e) => setTracker({ pickupLabel: e.target.value })} />
+                <span className="hint">Matches wait in Assigned until they carry this label — add it in the tracker or with Pickup ready on the dashboard. Empty = start everything the query finds.</span>
+              </div>
+              {tk.kind !== "github" && (
+                <div className="field">
+                  <label>Status on pickup</label>
+                  <input className="input code" value={tk.inProgressStatus} placeholder={DEFAULT_IN_PROGRESS_STATUS[tk.kind]} onChange={(e) => setTracker({ inProgressStatus: e.target.value })} />
+                  <span className="hint">The {TRACKER_NOUN[tk.kind]} moves here when work starts · empty = leave it.</span>
+                </div>
+              )}
+            </div>
             <div className="field">
               <label>Status on merge</label>
               <input className="input code" value={tk.doneStatus} placeholder={DEFAULT_DONE_STATUS[tk.kind]} onChange={(e) => setTracker({ doneStatus: e.target.value })} />
@@ -540,7 +558,7 @@ function ProjectEditor({
                   <label>Search command</label>
                   <input className="input code" value={tk.searchCommand} placeholder={tk.kind === "jira" ? DEFAULT_JIRA_SEARCH : DEFAULT_GITHUB_SEARCH} onChange={(e) => setTracker({ searchCommand: e.target.value })} />
                   <span className="hint">
-                    {tk.kind === "jira" ? <><span className="mono">{"{jql}"}</span> is filled in for you. Must print JSON (or any text containing issue keys).</> : <><span className="mono">{"{repo} {query}"}</span> are filled in. Must print <span className="mono">--json number,title,body,url</span> (or lines like <span className="mono">#12 Title</span>).</>}{" "}
+                    {tk.kind === "jira" ? <><span className="mono">{"{jql}"}</span> is filled in for you. Must print JSON (or any text containing issue keys).</> : <><span className="mono">{"{repo} {query}"}</span> are filled in. Must print <span className="mono">--json number,title,body,url,labels</span> (or lines like <span className="mono">#12 Title</span>).</>}{" "}
                     Empty = default.
                   </span>
                 </div>
@@ -724,6 +742,7 @@ function ProjectEditor({
               <dt>Base / remote</dt><dd className="mono">{p.baseBranch} · {p.remote}</dd>
               <dt>Tracker</dt><dd>{TRACKER_LABEL[p.tracker.kind]}{p.tracker.kind === "github" ? ` · ${p.tracker.repo || `repo from ${p.remote}`}` : p.tracker.kind === "linear" ? ` · assignee ${p.tracker.linearAssignee || "anyone"} · status ${p.tracker.linearState || "any"}` : ""}</dd>
               <dt>Query</dt><dd className="mono">{p.tracker.query || <span className="muted">none</span>}</dd>
+              <dt>Pickup</dt><dd>{p.tracker.pickupLabel.trim() ? <>Waits for the <span className="mono">{p.tracker.pickupLabel}</span> label</> : "Starts everything the query finds"}{p.tracker.inProgressStatus.trim() ? ` · moved to “${p.tracker.inProgressStatus}”` : ""}</dd>
               <dt>On merge</dt><dd>{p.tracker.doneStatus.trim() ? (p.tracker.kind === "github" ? "Issue closed as completed" : `Moved to “${p.tracker.doneStatus}”`) : "Ticket status left as is"}</dd>
               <dt>MCP servers</dt><dd>{mcpError ? <span className="err-text">invalid JSON</span> : mcpServers.join(", ") || "none"}</dd>
               <dt>Agent chain</dt>

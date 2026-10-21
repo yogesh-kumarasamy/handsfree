@@ -4,10 +4,11 @@ import { openExternal, type Api } from "../api";
 import { ago, CiPill, duration, Icon, Logo, ReviewPill, StatusBadge, until, useTick } from "../ui";
 
 const WORK: TicketStatus[] = ["running", "manual", "failed", "stopped", "queued"];
-const ORDER: TicketStatus[] = [...WORK, "pr_ci_failed", "pr_draft", "pr_ready", "pr_approved", "merged", "done"];
+const ORDER: TicketStatus[] = ["awaiting_pickup", ...WORK, "pr_ci_failed", "pr_draft", "pr_ready", "pr_approved", "merged", "done"];
 
-type Section = "work" | "prs" | "approved" | "merged";
+type Section = "assigned" | "work" | "prs" | "approved" | "merged";
 function sectionOf(t: Ticket): Section {
+  if (t.status === "awaiting_pickup") return "assigned";
   if (t.status === "pr_approved") return "approved";
   if (t.status === "merged" || t.status === "done") return "merged";
   if (PR_STATUSES.includes(t.status) || (t.fix && (t.status === "running" || t.status === "queued"))) return "prs";
@@ -41,6 +42,8 @@ export function Dashboard({
     [state],
   );
   const by = (s: Section) => sorted.filter((t) => sectionOf(t) === s);
+  // Oldest first: the ones waiting longest for triage come first.
+  const assigned = by("assigned").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const work = by("work");
   const prs = by("prs");
   const approved = by("approved");
@@ -54,7 +57,7 @@ export function Dashboard({
   const sel = selected ? state.tickets[selected] : undefined;
   const pollErrors = Object.entries(state.pollErrors || {});
   const toggle = (t: Ticket) => setSelected(t.key === selected ? undefined : t.key);
-  const rowCls = (t: Ticket) => (t.key === selected ? "selected" : "");
+  const cardCls = (t: Ticket) => `kcard ${t.key === selected ? "selected" : ""}`;
   const stop = (e: React.MouseEvent) => e.stopPropagation();
   const inState = (t: Ticket) => {
     if (t.status === "pr_approved" && t.pr?.approvedAt) return duration(t.pr.approvedAt);
@@ -112,9 +115,14 @@ export function Dashboard({
     return <span className={`pill ${m.ok ? "ok" : "bad"}`} title={m.error || m.text}>💬 {m.ok ? "sent" : "failed"}</span>;
   };
   const pickBox = (t: Ticket) => (
-    <td onClick={stop} style={{ width: 28 }}>
-      <input type="checkbox" checked={picked.has(t.key)} onChange={() => togglePick(t.key)} title="Select for a combined collab message" />
-    </td>
+    <input type="checkbox" onClick={stop} checked={picked.has(t.key)} onChange={() => togglePick(t.key)} title="Select for a combined collab message" />
+  );
+  const issueLink = (t: Ticket) => t.issueUrl && <button className="btn sm ghost" onClick={() => openExternal(t.issueUrl!)} title="Open in the tracker">↗</button>;
+  const head = (t: Ticket, lead?: React.ReactNode) => (
+    <>
+      <div className="kcard-top">{lead}<span className="key">{t.key}</span>{config.projects.length > 1 && <span className="small faint kcard-project">{projects[t.projectId]?.name}</span>}</div>
+      <div className="kcard-summary" title={t.summary}>{t.summary}</div>
+    </>
   );
   const sendBtn = (t: Ticket) => <button className="btn sm ghost" onClick={() => openCompose([t.key])} title="Send to collab">💬</button>;
 
@@ -143,14 +151,6 @@ export function Dashboard({
           <button className="btn ghost sm" onClick={() => setNotice(undefined)} title="Dismiss">✕</button>
         </div>
       )}
-      {picked.size > 0 && (
-        <div className="callout info" style={{ marginBottom: 12 }}>
-          <span className="t">{picked.size} selected</span>
-          <div className="spacer" />
-          <button className="btn sm primary" onClick={() => openCompose([...picked])}>Send to collab</button>
-          <button className="btn sm ghost" onClick={() => setPicked(new Set())}>Clear</button>
-        </div>
-      )}
       {pollErrors.map(([pid, err]) => (
         <div key={pid} className="callout err" style={{ marginBottom: 12 }}>
           <b>{projects[pid]?.name || pid}:</b> <span className="t">{err}</span>
@@ -158,6 +158,10 @@ export function Dashboard({
       ))}
 
       <div className="stats">
+        <div className="card stat">
+          <div className="stat-label"><span className="dot" style={{ color: "var(--amber)" }} /> Awaiting pickup</div>
+          <div className="stat-value">{assigned.length}</div>
+        </div>
         <div className="card stat">
           <div className="stat-label"><span className="dot" style={{ color: "var(--blue)" }} /> Running</div>
           <div className="stat-value">{n("running")} <small>/ {config.settings.maxParallel} slots</small></div>
@@ -182,143 +186,138 @@ export function Dashboard({
 
       <div className={`dash-grid ${sel ? "with-detail" : ""}`}>
         <div style={{ minWidth: 0 }}>
-          {/* In progress */}
-          <div className="card section-card" style={{ overflow: "hidden" }}>
-            <div className="section-head"><div className="card-title" style={{ margin: 0 }}>In progress</div><span className="count">{work.length}</span></div>
-            {work.length === 0 ? (
-              <div className="empty" style={{ padding: "28px 20px" }}>
-                <p style={{ marginBottom: 0 }}>Nothing running. HandsFree checks your tracker queries every {config.settings.pollIntervalMin} min.</p>
-              </div>
-            ) : (
-              <div className="table-wrap">
-                <table className={`tickets ${sel ? "compact" : ""}`}>
-                  <thead><tr><th>Ticket</th><th>Status</th><th>Agent chain</th><th>Updated</th></tr></thead>
-                  <tbody>
-                    {work.map((t) => (
-                      <tr key={t.key} className={rowCls(t)} onClick={() => toggle(t)}>
-                        <td><div className="key">{t.key}</div><div className="summary small muted">{t.summary}</div></td>
-                        <td>
-                          <div className="row" style={{ gap: 6 }}>
-                            <StatusBadge status={t.status} />
-                            {t.slow && t.status === "running" && <span className="badge stopped" title="Running longer than your “slow” setting">⏱ slow</span>}
-                          </div>
-                        </td>
-                        <td><Chain ticket={t} project={projects[t.projectId]} /></td>
-                        <td className="small muted">{inState(t)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
+          <div className="board">
+            {/* Assigned: found by the query, waiting for the pickup label */}
+            <Column title="Assigned" count={assigned.length} hint="Waits for the pickup label before any agent starts">
+              {assigned.length === 0 && <div className="kempty">No tickets waiting for triage.</div>}
+              {assigned.map((t) => {
+                const label = projects[t.projectId]?.tracker.pickupLabel || "pickup label";
+                return (
+                  <div key={t.key} className={cardCls(t)} onClick={() => toggle(t)}>
+                    {head(t)}
+                    <div className="kcard-meta small muted">found {ago(t.createdAt)}{t.labels?.length ? ` · ${t.labels.join(", ")}` : ""}</div>
+                    <div className="kcard-actions" onClick={stop}>
+                      <button className="btn sm primary" onClick={() => act(`Pickup ready ${t.key}`, () => api.pickupReady(t.key))} title={`Add the ${label} label on the tracker and start work`}>
+                        Pickup ready
+                      </button>
+                      {issueLink(t)}
+                    </div>
+                  </div>
+                );
+              })}
+            </Column>
 
-          {/* Pull requests */}
-          {prs.length > 0 && (
-            <div className="card section-card" style={{ overflow: "hidden" }}>
-              <div className="section-head"><div className="card-title" style={{ margin: 0 }}>Pull requests</div><span className="count">{prs.length}</span></div>
-              <div className="table-wrap">
-                <table className={`tickets ${sel ? "compact" : ""}`}>
-                  <thead><tr><th /><th>Ticket</th><th>Status</th><th>CI</th><th>Review</th><th>Updated</th><th /></tr></thead>
-                  <tbody>
-                    {prs.map((t) => {
-                      const p = projects[t.projectId];
-                      const fixing = !!t.fix && (t.status === "running" || t.status === "queued");
-                      const err = state.prCheckErrors?.[t.key];
-                      return (
-                        <tr key={t.key} className={rowCls(t)} onClick={() => toggle(t)}>
-                          {pickBox(t)}
-                          <td>
-                            <div className="key">{t.key}</div>
-                            <div className="summary small muted">{t.summary}</div>
-                            {err && <div className="err-line" title={err}>PR check failed: {err.slice(0, 80)}</div>}
-                          </td>
-                          <td>
-                            <div className="row" style={{ gap: 6 }}>
-                              <StatusBadge
-                                status={t.status}
-                                label={fixing ? `${t.status === "queued" ? "Fix queued" : "Fixing CI"} ${t.fix!.round}/${Math.max(t.fix!.round, p?.ciFixMaxRounds ?? 0)}` : undefined}
-                              />
-                              {msgPill(t)}
-                            </div>
-                          </td>
-                          <td><CiPill ci={t.pr?.ci} /></td>
-                          <td><ReviewPill decision={t.pr?.reviewDecision} /></td>
-                          <td className="small muted">{inState(t)}</td>
-                          <td onClick={stop}>
-                            <div className="row" style={{ gap: 6, justifyContent: "flex-end" }}>
-                              {t.status === "pr_draft" && <button className="btn sm primary" onClick={() => act(`Publish ${t.key}`, () => api.publish(t.key))}>Publish</button>}
-                              {t.status === "pr_ci_failed" && <button className="btn sm primary" onClick={() => act(`Fix CI ${t.key}`, () => api.fixCi(t.key))}>Fix CI</button>}
-                              {sendBtn(t)}
-                              {prLink(t)}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+            {/* In progress */}
+            <Column title="In progress" count={work.length}>
+              {work.length === 0 && <div className="kempty">Nothing running. HandsFree checks your tracker queries every {config.settings.pollIntervalMin} min.</div>}
+              {work.map((t) => (
+                <div key={t.key} className={cardCls(t)} onClick={() => toggle(t)}>
+                  {head(t)}
+                  <div className="kcard-badges">
+                    <StatusBadge status={t.status} />
+                    {t.slow && t.status === "running" && <span className="badge stopped" title="Running longer than your “slow” setting">⏱ slow</span>}
+                    <span className="small faint">{inState(t)}</span>
+                  </div>
+                  <Chain ticket={t} project={projects[t.projectId]} />
+                </div>
+              ))}
+            </Column>
 
-          {/* Approved, not merged */}
-          {approved.length > 0 && (
-            <div className="card section-card" style={{ overflow: "hidden" }}>
-              <div className="section-head"><div className="card-title" style={{ margin: 0 }}>Approved, not merged</div><span className="count">{approved.length}</span></div>
-              <div className="table-wrap">
-                <table className={`tickets ${sel ? "compact" : ""}`}>
-                  <thead><tr><th /><th>Ticket</th><th>Approved</th><th>Waiting</th><th /></tr></thead>
-                  <tbody>
-                    {approved.map((t) => {
-                      const limit = projects[t.projectId]?.mergeNudgeAfterMin ?? 30;
-                      const waitedMin = t.pr?.approvedAt ? (Date.now() - new Date(t.pr.approvedAt).getTime()) / 60_000 : 0;
-                      return (
-                        <tr key={t.key} className={rowCls(t)} onClick={() => toggle(t)}>
-                          {pickBox(t)}
-                          <td><div className="key">{t.key}</div><div className="summary small muted">{t.summary}</div>{msgPill(t)}</td>
-                          <td className="small muted">{ago(t.pr?.approvedAt)}</td>
-                          <td className={`small ${waitedMin >= limit ? "overdue" : "muted"}`}>{t.pr?.approvedAt ? duration(t.pr.approvedAt) : "—"}{t.pr?.mergeNudgedAt ? " · nudged" : ""}</td>
-                          <td onClick={stop}><div className="row" style={{ gap: 6, justifyContent: "flex-end" }}>{sendBtn(t)}{prLink(t)}</div></td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+            {/* Pull requests; the collab selection lives here */}
+            <Column
+              title="Pull requests"
+              count={prs.length}
+              actions={
+                picked.size > 0 && (
+                  <div className="kcol-select">
+                    <span className="small muted">{picked.size} selected</span>
+                    <button className="btn sm primary" onClick={() => openCompose([...picked])}>💬 Send to collab</button>
+                    <button className="btn sm ghost" onClick={() => setPicked(new Set())}>Clear</button>
+                  </div>
+                )
+              }
+            >
+              {prs.length === 0 && <div className="kempty">No open PRs.</div>}
+              {prs.map((t) => {
+                const p = projects[t.projectId];
+                const fixing = !!t.fix && (t.status === "running" || t.status === "queued");
+                const err = state.prCheckErrors?.[t.key];
+                return (
+                  <div key={t.key} className={cardCls(t)} onClick={() => toggle(t)}>
+                    {head(t, pickBox(t))}
+                    {err && <div className="err-line" title={err}>PR check failed: {err.slice(0, 80)}</div>}
+                    <div className="kcard-badges">
+                      <StatusBadge
+                        status={t.status}
+                        label={fixing ? `${t.status === "queued" ? "Fix queued" : "Fixing CI"} ${t.fix!.round}/${Math.max(t.fix!.round, p?.ciFixMaxRounds ?? 0)}` : undefined}
+                      />
+                      <CiPill ci={t.pr?.ci} />
+                      <ReviewPill decision={t.pr?.reviewDecision} />
+                      {msgPill(t)}
+                    </div>
+                    <div className="kcard-actions" onClick={stop}>
+                      {t.status === "pr_draft" && <button className="btn sm primary" onClick={() => act(`Publish ${t.key}`, () => api.publish(t.key))}>Publish</button>}
+                      {t.status === "pr_ci_failed" && <button className="btn sm primary" onClick={() => act(`Fix CI ${t.key}`, () => api.fixCi(t.key))}>Fix CI</button>}
+                      <span className="small faint">{inState(t)}</span>
+                      <div className="spacer" />
+                      {sendBtn(t)}
+                      {prLink(t)}
+                    </div>
+                  </div>
+                );
+              })}
+            </Column>
 
-          {/* Merged */}
-          {by("merged").length > 0 && (
-            <div className="card section-card" style={{ overflow: "hidden" }}>
-              <div className="section-head">
-                <div className="card-title" style={{ margin: 0 }}>Merged</div><span className="count">{mergedAll.length}</span>
-                <div className="spacer" />
-                <label className="row small muted" style={{ cursor: "pointer" }}>
+            {/* Approved, not merged */}
+            <Column title="Approved" count={approved.length} hint="Approved, not merged yet">
+              {approved.length === 0 && <div className="kempty">Nothing waiting to merge.</div>}
+              {approved.map((t) => {
+                const limit = projects[t.projectId]?.mergeNudgeAfterMin ?? 30;
+                const waitedMin = t.pr?.approvedAt ? (Date.now() - new Date(t.pr.approvedAt).getTime()) / 60_000 : 0;
+                return (
+                  <div key={t.key} className={cardCls(t)} onClick={() => toggle(t)}>
+                    {head(t, pickBox(t))}
+                    <div className="kcard-badges">
+                      <span className={`small ${waitedMin >= limit ? "overdue" : "muted"}`}>waiting {t.pr?.approvedAt ? duration(t.pr.approvedAt) : "—"}{t.pr?.mergeNudgedAt ? " · nudged" : ""}</span>
+                      {msgPill(t)}
+                    </div>
+                    <div className="kcard-actions" onClick={stop}>
+                      <div className="spacer" />
+                      {sendBtn(t)}
+                      {prLink(t)}
+                    </div>
+                  </div>
+                );
+              })}
+            </Column>
+
+            {/* Merged */}
+            <Column
+              title="Merged"
+              count={mergedAll.length}
+              actions={
+                <label className="row small muted" style={{ cursor: "pointer", gap: 4 }}>
                   <input type="checkbox" checked={showClosed} onChange={(e) => setShowClosed(e.target.checked)} /> Show closed
                 </label>
-              </div>
-              <div className="table-wrap">
-                <table className={`tickets ${sel ? "compact" : ""}`}>
-                  <thead><tr><th>Ticket</th><th>Status</th><th>Merged</th><th /></tr></thead>
-                  <tbody>
-                    {merged.map((t) => (
-                      <tr key={t.key} className={rowCls(t)} onClick={() => toggle(t)}>
-                        <td><div className="key">{t.key}</div><div className="summary small muted">{t.summary}</div></td>
-                        <td><StatusBadge status={t.status} /></td>
-                        <td className="small muted">{ago(t.pr?.mergedAt || t.updatedAt)}</td>
-                        <td onClick={stop}><div className="row" style={{ justifyContent: "flex-end" }}>{prLink(t)}</div></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              }
+            >
+              {mergedAll.length === 0 && <div className="kempty">Nothing merged yet.</div>}
+              {merged.map((t) => (
+                <div key={t.key} className={cardCls(t)} onClick={() => toggle(t)}>
+                  {head(t)}
+                  <div className="kcard-actions" onClick={stop}>
+                    <StatusBadge status={t.status} />
+                    <span className="small faint">{ago(t.pr?.mergedAt || t.updatedAt)}</span>
+                    <div className="spacer" />
+                    {prLink(t)}
+                  </div>
+                </div>
+              ))}
               {mergedAll.length > 20 && !showAllMerged && (
-                <div style={{ padding: "8px 14px 12px" }}><button className="btn sm ghost" onClick={() => setShowAllMerged(true)}>Show all {mergedAll.length}</button></div>
+                <button className="btn sm ghost" onClick={() => setShowAllMerged(true)}>Show all {mergedAll.length}</button>
               )}
-            </div>
-          )}
+            </Column>
+          </div>
 
           {/* Routines */}
           <RoutinesCard api={api} config={config} state={state} />
@@ -346,6 +345,19 @@ export function Dashboard({
         </div>
       )}
     </div>
+  );
+}
+
+function Column({ title, count, hint, actions, children }: { title: string; count: number; hint?: string; actions?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <section className="kcol">
+      <div className="kcol-head" title={hint}>
+        <span className="card-title" style={{ margin: 0 }}>{title}</span>
+        <span className="count">{count}</span>
+      </div>
+      {actions && <div className="kcol-actions">{actions}</div>}
+      <div className="kcol-body">{children}</div>
+    </section>
   );
 }
 
@@ -385,6 +397,7 @@ function TicketDetail({ api, ticket, project, prError, onCompose, onClose }: { a
   };
   const open = () => run(() => api.open(ticket.key), (r) => `Opened Terminal · ${r.command}`);
   const isPr = PR_STATUSES.includes(ticket.status);
+  const waiting = ticket.status === "awaiting_pickup";
   const fixing = !!ticket.fix && (ticket.status === "running" || ticket.status === "queued");
   const openLabel =
     ticket.status === "running" ? "👀 Open live" : ticket.status === "manual" ? "⌨ Reopen session" : isPr || ticket.status === "merged" ? "⌨ Open in Terminal" : "⌨ Take over";
@@ -449,7 +462,13 @@ function TicketDetail({ api, ticket, project, prError, onCompose, onClose }: { a
           )}
           {ticket.status === "pr_draft" && <button className="btn sm" onClick={() => run(() => api.publish(ticket.key))} title="gh pr ready — marks the PR ready for review">Publish</button>}
           {ticket.status === "pr_ci_failed" && <button className="btn sm primary" onClick={() => run(() => api.fixCi(ticket.key))} title="Run the agent chain on the failing checks now">Fix CI</button>}
-          {ticket.status !== "done" && ticket.status !== "merged" && (
+          {waiting && (
+            <button className="btn sm primary" onClick={() => run(() => api.pickupReady(ticket.key))} title={`Add the ${project?.tracker.pickupLabel || "pickup"} label on the tracker and start work`}>
+              Pickup ready
+            </button>
+          )}
+          {waiting && ticket.issueUrl && <button className="btn sm" onClick={() => openExternal(ticket.issueUrl!)}>Open in tracker ↗</button>}
+          {!waiting && ticket.status !== "done" && ticket.status !== "merged" && (
             <button className={`btn sm ${ticket.status === "failed" || ticket.slow ? "primary" : ""}`} onClick={open} title={openHint}>
               {openLabel}
             </button>
@@ -458,7 +477,7 @@ function TicketDetail({ api, ticket, project, prError, onCompose, onClose }: { a
           {(ticket.status === "failed" || ticket.status === "stopped") && (
             <button className="btn sm" onClick={() => api.retry(ticket.key)}>Retry chain</button>
           )}
-          {ticket.status !== "running" && ticket.status !== "done" && ticket.status !== "merged" && ticket.status !== "manual" && !fixing && (
+          {!waiting && ticket.status !== "running" && ticket.status !== "done" && ticket.status !== "merged" && ticket.status !== "manual" && !fixing && (
             <button className="btn sm" onClick={() => api.cleanup(ticket.key)}>Clean up worktree</button>
           )}
           {ticket.status !== "running" && (
@@ -469,12 +488,14 @@ function TicketDetail({ api, ticket, project, prError, onCompose, onClose }: { a
       <div className="detail-body">
         <dl className="kv">
           <dt>Project</dt><dd>{project?.name}</dd>
+          {ticket.labels?.length ? (<><dt>Labels</dt><dd>{ticket.labels.join(", ")}</dd></>) : null}
           <dt>Branch</dt><dd className="mono">{ticket.branch}</dd>
           <dt>Worktree</dt><dd className="mono" title={ticket.worktree}>{ticket.worktree.replace(/^\/Users\/[^/]+/, "~")}</dd>
           <dt>Tracker</dt>
           <dd className="row" style={{ gap: 6, flexWrap: "wrap" }}>
             {ticket.issueUrl && <a href="#" onClick={(e) => { e.preventDefault(); openExternal(ticket.issueUrl!); }}>{ticket.key} ↗</a>}
             <span>{ticket.jiraCommented ? "PR link commented ✓" : ticket.prUrl ? "Comment pending" : "—"}</span>
+            {ticket.trackerStarted && !ticket.trackerDone && <span>· Moved to {project?.tracker.inProgressStatus || "in progress"} ✓</span>}
             {ticket.trackerDone && <span>· Moved to {project?.tracker.doneStatus || "done"} ✓</span>}
           </dd>
           {ticket.pr && (
@@ -540,7 +561,7 @@ function TicketDetail({ api, ticket, project, prError, onCompose, onClose }: { a
         <div>
           <div className="section-label">Attempts</div>
           <div className="timeline">
-            {ticket.attempts.length === 0 && <div className="small muted">Waiting for a free slot.</div>}
+            {ticket.attempts.length === 0 && <div className="small muted">{waiting ? `Waiting for the ${project?.tracker.pickupLabel || "pickup"} label. No agent runs until then.` : "Waiting for a free slot."}</div>}
             {ticket.attempts.map((a, i) => {
               const ic = outcomeIcon(a.outcome);
               return (

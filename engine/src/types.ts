@@ -69,12 +69,14 @@ export interface Config {
 }
 
 /**
+ * Triage: awaiting_pickup (found by the query, waits for the project's pickup label) → queued.
  * Work phase: queued → running → (manual | failed | stopped).
  * PR phase: pr_draft | pr_ready | pr_ci_failed | pr_approved → merged | done.
  * "manual" = you took over. "done" = PR closed without merge (and legacy tickets).
  * A CI fix in progress is "running" with `ticket.fix` set.
  */
 export type TicketStatus =
+  | "awaiting_pickup"
   | "queued"
   | "running"
   | "manual"
@@ -182,6 +184,13 @@ export interface TrackerConfig {
   linearAssignee: string;
   /** Linear only: pick up issues in these statuses (comma-separated names, default "Todo"). */
   linearState: string;
+  /**
+   * Found issues wait in "Assigned" until they carry this label (added in the tracker or from the dashboard).
+   * Empty = pick up everything the query finds.
+   */
+  pickupLabel: string;
+  /** Status the issue moves to when HandsFree picks it up. Empty = don't move it. Jira and Linear only. */
+  inProgressStatus: string;
 }
 
 export interface LinearAccountSettings {
@@ -193,11 +202,18 @@ export interface LinearAccountSettings {
 
 export const DEFAULT_LINEAR_ACCOUNT: LinearAccountSettings = { mcpUrl: "https://mcp.linear.app/mcp", issuer: "https://mcp.linear.app", redirectPort: 47832, scopes: "read write" };
 export const DEFAULT_JIRA_TRANSITION = "acli jira workitem transition --key {issue_key} --status {status} --yes";
-export const DEFAULT_GITHUB_SEARCH = "gh issue list --repo {repo} --search {query} --state open --limit 50 --json number,title,body,url";
+export const DEFAULT_GITHUB_SEARCH = "gh issue list --repo {repo} --search {query} --state open --limit 50 --json number,title,body,url,labels";
+/** The pre-labels default, upgraded on load so the pickup label can be seen. */
+export const LEGACY_GITHUB_SEARCH = "gh issue list --repo {repo} --search {query} --state open --limit 50 --json number,title,body,url";
+export const DEFAULT_GITHUB_LABEL = "gh issue edit {number} --repo {repo} --add-label {label}";
+export const GITHUB_CREATE_LABEL = "gh label create {label} --repo {repo} --color 0E8A16 --description {description} --force";
+export const DEFAULT_PICKUP_LABEL = "PICKUP_READY";
 export const DEFAULT_GITHUB_COMMENT = "gh issue comment {number} --repo {repo} --body {body}";
 export const DEFAULT_GITHUB_CLOSE = "gh issue close {number} --repo {repo} --reason completed";
 export const TRACKER_NOUN: Record<TrackerKind, string> = { jira: "Jira ticket", github: "GitHub issue", linear: "Linear issue" };
 export const DEFAULT_DONE_STATUS: Record<TrackerKind, string> = { jira: "Done", github: "closed", linear: "Done" };
+/** GitHub issues have no status: picking one up only adds the label. */
+export const DEFAULT_IN_PROGRESS_STATUS: Record<TrackerKind, string> = { jira: "In Progress", github: "", linear: "In Progress" };
 
 export type MessageKind = "review_ready" | "merge_nudge" | "manual" | "bulk" | "test" | "routine";
 
@@ -287,6 +303,10 @@ export interface Ticket {
   baseRef?: string;
   /** Branch type keyword from the tracker (bug, feature…), used by the naming templates. */
   type?: string;
+  /** Tracker labels as last seen by the poll. */
+  labels?: string[];
+  /** Set when the in-progress transition on pickup succeeded. */
+  trackerStarted?: boolean;
   /** Index into the project's enabled agent chain the next run starts from. */
   agentIndex: number;
   currentAgent?: string;
@@ -334,6 +354,8 @@ export interface FoundIssue {
   url?: string;
   /** Branch type keyword (bug, feature, spike…) derived from the issue type or labels; see naming.ts `issueTypeOf`. */
   type?: string;
+  /** Label names, when the tracker returned them. */
+  labels?: string[];
 }
 
 export type EngineEvent =
@@ -391,9 +413,14 @@ export const AGENT_PRESETS: Omit<AgentConfig, "id">[] = [
 ];
 
 export const DEFAULT_JIRA_SEARCH =
-  'acli jira workitem search --jql {jql} --fields "key,summary,description,issuetype" --limit 50 --json';
-/** The pre-issuetype default, upgraded on load so {type} in naming templates works for existing projects. */
-export const LEGACY_JIRA_SEARCH = 'acli jira workitem search --jql {jql} --fields "key,summary,description" --limit 50 --json';
+  'acli jira workitem search --jql {jql} --fields "key,summary,description,issuetype,labels" --limit 50 --json';
+/** Older defaults (before issuetype, before labels), upgraded on load so {type} and the pickup label work for existing projects. */
+export const LEGACY_JIRA_SEARCHES = [
+  'acli jira workitem search --jql {jql} --fields "key,summary,description" --limit 50 --json',
+  'acli jira workitem search --jql {jql} --fields "key,summary,description,issuetype" --limit 50 --json',
+];
+/** {labels} = the issue's labels plus the new one, comma-separated (acli may replace the list). */
+export const DEFAULT_JIRA_LABEL = "acli jira workitem edit --key {issue_key} --labels {labels} --yes";
 export const DEFAULT_JIRA_COMMENT = "acli jira workitem comment create --key {issue_key} --body {body}";
 
 // ---------- Routines: scheduled agent runs per project that report to the collab channel ----------

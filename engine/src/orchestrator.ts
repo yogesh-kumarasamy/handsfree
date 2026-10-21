@@ -11,6 +11,7 @@ import { PrEvents } from "./prevents";
 import { RoutineService } from "./routines/service";
 import { buildFixPrompt, mergeNudgeDue, nextStatus, shouldAutoFix, toPrInfo, type RawPr } from "./prstate";
 import { exec, fill, q, SHELL, start, type Running } from "./shell";
+import { hasLabel } from "./trackers/adapter";
 import { TrackerService } from "./trackers/service";
 import { DATA_DIR, loadConfig, loadState, logFile, normalizeProject, normalizeSettings, routineLogFile, saveConfig, saveState } from "./store";
 import {
@@ -196,8 +197,22 @@ export class Orchestrator {
             const tracker = this.trackers.trackerFor(p);
             const issues = await tracker.search();
             delete this.state.pollErrors[p.id];
+            const gate = p.tracker.pickupLabel.trim();
+            const found = new Set(issues.map((i) => i.key));
+            // Waiting tickets that left the query (unassigned, closed, triaged away) never started: drop them.
+            for (const t of Object.values(this.state.tickets)) {
+              if (t.projectId === p.id && t.status === "awaiting_pickup" && !found.has(t.key)) this.drop(t.key);
+            }
             for (const i of issues) {
-              if (this.state.tickets[i.key]) continue; // each ticket is picked up once (until you Forget it)
+              const ready = !gate || hasLabel(i.labels, gate);
+              const known = this.state.tickets[i.key];
+              if (known) {
+                // Each ticket is picked up once (until you Forget it); a waiting one starts when the label shows up.
+                if (known.status !== "awaiting_pickup") continue;
+                this.touch(known, { summary: i.summary || i.key, description: i.description, labels: i.labels, type: i.type });
+                if (ready) await this.pickUp(p, known, gate ? `“${gate}” label found on the ${tracker.noun}` : "pickup label no longer required");
+                continue;
+              }
               this.state.tickets[i.key] = {
                 key: i.key,
                 projectId: p.id,
@@ -205,8 +220,9 @@ export class Orchestrator {
                 description: i.description,
                 trackerId: i.id,
                 issueUrl: i.url,
-                status: "queued",
+                status: "awaiting_pickup",
                 type: i.type,
+                labels: i.labels,
                 branch: renderName(p.naming.branch.template, { key: i.key, summary: i.summary || i.key, type: i.type }),
                 worktree: worktreePath(p, i.key),
                 agentIndex: 0,
@@ -214,7 +230,9 @@ export class Orchestrator {
                 createdAt: now(),
                 updatedAt: now(),
               };
-              this.log(i.key, `── HandsFree ▸ ${i.key}: ${i.summary}\npicked up by ${tracker.noun} query for “${p.name}” at ${now()}\n`);
+              this.log(i.key, `── HandsFree ▸ ${i.key}: ${i.summary}\nfound by ${tracker.noun} query for “${p.name}” at ${now()}\n`);
+              if (ready) await this.pickUp(p, this.state.tickets[i.key], gate ? `already has the “${gate}” label` : "this project picks up everything its query finds");
+              else this.log(i.key, `waiting for the “${gate}” label before starting work\n`);
             }
           } catch (e) {
             this.state.pollErrors[p.id] = (e as Error).message;
@@ -228,6 +246,47 @@ export class Orchestrator {
       this.schedulePoll();
       this.pump();
     }
+  }
+
+  /** Waiting → queued, and move the issue to the project's in-progress status. A failed move is logged, never blocks the work. */
+  private async pickUp(p: ProjectConfig, t: Ticket, why: string) {
+    this.touch(t, { status: "queued" });
+    this.log(t.key, `▶ Picked up: ${why}\n`);
+    const status = p.tracker.inProgressStatus.trim();
+    if (!status || t.trackerStarted) return;
+    const tracker = this.trackers.trackerFor(p);
+    try {
+      const r = await tracker.transition(t, status);
+      if (!r.skipped) {
+        this.log(t.key, `✓ Moved the ${tracker.noun} to “${status}”\n`);
+        this.touch(t, { trackerStarted: true });
+      } else if (r.reason) this.log(t.key, `· ${tracker.noun}: ${r.reason}; status left as is\n`);
+    } catch (e) {
+      this.log(t.key, `! Couldn't move the ${tracker.noun} to “${status}”: ${(e as Error).message}\n`);
+      this.notify(`${t.key}: couldn't move the ${tracker.noun} to ${status}`, (e as Error).message, "failed");
+    }
+  }
+
+  /** Dashboard "Pickup ready": label the issue in its tracker, then start it like the poll would. */
+  async markPickupReady(key: string) {
+    const t = this.state.tickets[key];
+    const p = t && this.project(t.projectId);
+    if (!t || !p) throw new Error("No such ticket.");
+    if (t.status !== "awaiting_pickup") throw new Error("This ticket was already picked up.");
+    const label = p.tracker.pickupLabel.trim();
+    const tracker = this.trackers.trackerFor(p);
+    if (label && !hasLabel(t.labels, label)) {
+      const r = await tracker.addLabel(t, label);
+      if (r.skipped) this.log(key, `· ${tracker.noun}: ${r.reason || "can't add labels"}; starting without the “${label}” label\n`);
+      else {
+        this.log(key, `✓ Added the “${label}” label on the ${tracker.noun}\n`);
+        t.labels = [...(t.labels || []), label];
+      }
+    }
+    // The poll may have picked it up while the label was being added.
+    if (t.status !== "awaiting_pickup") return;
+    await this.pickUp(p, t, "marked pickup ready from the dashboard");
+    this.pump();
   }
 
   // ---------- PR check (its own timer) ----------
@@ -712,7 +771,7 @@ export class Orchestrator {
   }
   retry(key: string) {
     const t = this.state.tickets[key];
-    if (!t || this.running.has(key)) return;
+    if (!t || this.running.has(key) || t.status === "awaiting_pickup") return;
     if (t.status === "pr_ci_failed") return void this.fixCi(key).catch((e) => this.log(key, `! ${(e as Error).message}\n`));
     this.log(key, `\n↻ Retry requested at ${now()}\n`);
     this.touch(t, { status: "queued", error: undefined, agentIndex: 0 });
@@ -892,13 +951,16 @@ export class Orchestrator {
 
   forget(key: string) {
     if (this.running.has(key)) return;
+    this.drop(key);
+    this.persist();
+  }
+  private drop(key: string) {
     delete this.state.tickets[key];
     try {
       fs.unlinkSync(logFile(key));
     } catch {
       /* no log */
     }
-    this.persist();
   }
   shutdown() {
     this.messaging.shutdown();

@@ -5,7 +5,7 @@ import type { ClientStore, TokenStore } from "../messaging/oauth";
 import { TokenKeeper } from "../messaging/tokens";
 import { issueTypeOf, labelNames } from "../naming";
 import { TRACKER_NOUN, type AccountStatus, type FoundIssue, type LinearAccountSettings } from "../types";
-import type { StepResult, TicketRef, TrackerAdapter, TrackerProject } from "./adapter";
+import { hasLabel, type StepResult, type TicketRef, type TrackerAdapter, type TrackerProject } from "./adapter";
 
 type Schema = { properties?: Record<string, unknown> } | undefined;
 
@@ -109,7 +109,10 @@ function toIssues(raw: any[], o: { doneStatus: string; states: string[] }): Foun
     issue.id = typeof i.id === "string" || typeof i.id === "number" ? String(i.id) : i.identifier;
     if (typeof i.url === "string") issue.url = i.url;
     const labels = labelNames(i.labels);
-    if (labels.length) issue.type = issueTypeOf(labels);
+    if (labels.length) {
+      issue.type = issueTypeOf(labels);
+      issue.labels = labels;
+    }
     out.push(issue);
   }
   return out;
@@ -193,6 +196,20 @@ export class LinearTracker implements TrackerAdapter {
     const stateArg = argName(s, ["state", "stateId", "status"]);
     if (!stateArg) return this.skip("update_issue has no state argument");
     await this.conn.mcp.callTool("update_issue", { [idArg]: t.trackerId || t.key, [stateArg]: status });
+    return { skipped: false };
+  }
+
+  async addLabel(t: TicketRef, label: string): Promise<StepResult> {
+    const tools = await this.conn.tools();
+    if (!tools.has("update_issue")) return this.skip("Linear has no update_issue tool");
+    const s = tools.get("update_issue");
+    const idArg = argName(s, ["id", "issueId", "issue"]);
+    if (!idArg) return this.skip("update_issue has no issue argument");
+    const labelsArg = argName(s, ["labels", "labelNames"]);
+    if (!labelsArg) return this.skip("update_issue has no labels argument");
+    // The list replaces the issue's labels: send the ones it has plus the new one.
+    const labels = [...(t.labels || []).filter((l) => !hasLabel([l], label)), label];
+    await this.conn.mcp.callTool("update_issue", { [idArg]: t.trackerId || t.key, [labelsArg]: labels });
     return { skipped: false };
   }
 

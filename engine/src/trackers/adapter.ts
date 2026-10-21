@@ -1,8 +1,8 @@
-// One interface for every ticket tracker: find work, comment on it, move it to "done" on merge.
+// One interface for every ticket tracker: find work, label it ready, comment on it, move it along its statuses.
 import { sh, type RunOpts, type RunResult } from "../shell";
 import type { FoundIssue, ProjectConfig, Ticket, TrackerKind } from "../types";
 
-export type TicketRef = Pick<Ticket, "key" | "trackerId">;
+export type TicketRef = Pick<Ticket, "key" | "trackerId"> & Partial<Pick<Ticket, "labels">>;
 
 /**
  * `skipped` with a `reason`: the tracker couldn't do it (logged on the ticket). `skipped` without one: the project
@@ -21,6 +21,14 @@ export interface TrackerAdapter {
   comment(t: TicketRef, body: string): Promise<StepResult>;
   /** Move to `status`; `skipped` when there is no status or the tracker can't (then with a `reason`). */
   transition(t: TicketRef, status: string): Promise<StepResult>;
+  /** Add `label`, keeping the issue's other labels; `skipped` (with a `reason`) when the tracker can't. */
+  addLabel(t: TicketRef, label: string): Promise<StepResult>;
+}
+
+/** Tracker labels compare case-insensitively (Jira and GitHub keep the case you typed; people don't). */
+export function hasLabel(labels: readonly string[] | undefined, label: string) {
+  const want = label.trim().toLowerCase();
+  return !!want && !!labels?.some((l) => l.trim().toLowerCase() === want);
 }
 
 /** The project fields a tracker reads. */

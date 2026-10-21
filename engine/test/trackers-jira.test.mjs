@@ -28,3 +28,20 @@ test("JiraTracker.comment: empty = default command, '-' = skipped; a failing tra
   assert.deepEqual(await new JiraTracker({ ...p, tracker: { ...p.tracker, commentCommand: "-" } }, run).comment({ key: "X-1" }, "hello"), { skipped: true });
   await assert.rejects(new JiraTracker(p, run).transition({ key: "X-1" }, "Done"), /no such status/);
 });
+
+test("parseIssues: labels are kept", () => {
+  const [i] = parseIssues('[{"key":"X-6","fields":{"summary":"S","labels":["support","PICKUP_READY"]}}]');
+  assert.deepEqual(i.labels, ["support", "PICKUP_READY"]);
+});
+
+test("JiraTracker.addLabel: acli edit with the existing labels plus the new one (no duplicate); failure throws", async () => {
+  const calls = [];
+  const run = async (cmd) => { calls.push(cmd); return { code: 0, stdout: "", stderr: "", timedOut: false }; };
+  const p = { repoPath: "", tracker: { kind: "jira", query: "project = X", searchCommand: "", commentCommand: "", transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "" } };
+  await new JiraTracker(p, run).addLabel({ key: "X-1", labels: ["support", "pickup_ready"] }, "PICKUP_READY");
+  assert.equal(calls[0], "acli jira workitem edit --key 'X-1' --labels 'support,PICKUP_READY' --yes");
+  await new JiraTracker(p, run).addLabel({ key: "X-2" }, "PICKUP_READY");
+  assert.equal(calls[1], "acli jira workitem edit --key 'X-2' --labels 'PICKUP_READY' --yes");
+  const bad = async () => ({ code: 1, stdout: "", stderr: "You do not have permission to edit", timedOut: false });
+  await assert.rejects(new JiraTracker(p, bad).addLabel({ key: "X-1" }, "PICKUP_READY"), /permission/);
+});

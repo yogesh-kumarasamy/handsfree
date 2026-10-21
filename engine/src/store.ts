@@ -7,9 +7,13 @@ import {
   CLAUDE_RESUME,
   DEFAULT_JIRA_SEARCH,
   LEGACY_CLAUDE_COMMAND,
-  LEGACY_JIRA_SEARCH,
+  LEGACY_GITHUB_SEARCH,
+  LEGACY_JIRA_SEARCHES,
   DEFAULT_AGENT_MESSAGE_COMMAND,
   DEFAULT_DONE_STATUS,
+  DEFAULT_GITHUB_SEARCH,
+  DEFAULT_IN_PROGRESS_STATUS,
+  DEFAULT_PICKUP_LABEL,
   DEFAULT_LINEAR_ACCOUNT,
   DEFAULT_SETMORE_ACCOUNT,
   SETMORE_REQUIRED_SCOPE,
@@ -108,20 +112,26 @@ export function normalizeTracker(p: Partial<ProjectConfig> & LegacyJiraFields): 
       repo: "",
       linearAssignee: "me",
       linearState: "Todo",
+      pickupLabel: DEFAULT_PICKUP_LABEL,
+      inProgressStatus: DEFAULT_IN_PROGRESS_STATUS.jira,
     };
   }
   const kind: TrackerKind = t.kind === "github" || t.kind === "linear" ? t.kind : "jira";
+  const search = (t.searchCommand ?? "").trim();
   return {
     kind,
     query: t.query || "",
-    // The stock Jira search gained issuetype (naming templates need {type}); customised commands are yours.
-    searchCommand: (t.searchCommand ?? "").trim() === LEGACY_JIRA_SEARCH ? DEFAULT_JIRA_SEARCH : t.searchCommand ?? "",
+    // The stock searches gained fields (issuetype for {type}, labels for the pickup label); customised commands are yours.
+    searchCommand: LEGACY_JIRA_SEARCHES.includes(search) ? DEFAULT_JIRA_SEARCH : search === LEGACY_GITHUB_SEARCH ? DEFAULT_GITHUB_SEARCH : t.searchCommand ?? "",
     commentCommand: t.commentCommand ?? "",
     transitionCommand: t.transitionCommand ?? "",
     doneStatus: t.doneStatus ?? DEFAULT_DONE_STATUS[kind],
     repo: t.repo || "",
     linearAssignee: t.linearAssignee ?? "me",
     linearState: t.linearState ?? "Todo",
+    pickupLabel: (t.pickupLabel ?? DEFAULT_PICKUP_LABEL).trim(),
+    // GitHub's transition command closes the issue, so it never gets an in-progress status.
+    inProgressStatus: kind === "github" ? "" : (t.inProgressStatus ?? DEFAULT_IN_PROGRESS_STATUS[kind]).trim(),
   };
 }
 
