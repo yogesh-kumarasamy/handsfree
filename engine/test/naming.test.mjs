@@ -2,9 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ANYWHERE_NAMING, DEFAULT_NAMING, checkName, conformSubject, issueTypeOf, renderName, slugify, worktreeDirName } from "../dist/test/naming.js";
 
-test("worktreeDirName: Jira and Linear keys are kept; a GitHub key's # (a URL fragment to Vite/esbuild) and other unsafe characters become dashes", () => {
+test("worktreeDirName: Jira keys are kept; a GitHub key's # (a URL fragment to Vite/esbuild) and other unsafe characters become dashes", () => {
   assert.equal(worktreeDirName("CHAT-2893"), "CHAT-2893");
-  assert.equal(worktreeDirName("ENG-7"), "ENG-7");
   assert.equal(worktreeDirName("workspace#34"), "workspace-34");
   assert.equal(worktreeDirName("my.repo#5"), "my.repo-5");
   assert.equal(worktreeDirName("a b/c?d%e"), "a-b-c-d-e");

@@ -4,7 +4,6 @@ import {
   AGENT_PRESETS,
   DEFAULT_AGENT_MESSAGE_COMMAND,
   DEFAULT_SETMORE_ACCOUNT,
-  DEFAULT_LINEAR_ACCOUNT,
   DEFAULT_TEMPLATES,
   PR_STATUSES,
   ROUTINE_PRESETS,
@@ -31,7 +30,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
     settings: {
       pollIntervalMin: 15,
       prPollIntervalMin: 3,
-      accounts: { setmore: { ...DEFAULT_SETMORE_ACCOUNT, clientId: "hf-demo" }, linear: { ...DEFAULT_LINEAR_ACCOUNT } },
+      accounts: { setmore: { ...DEFAULT_SETMORE_ACCOUNT, clientId: "hf-demo" } },
       maxParallel: 3,
       agentTimeoutMin: 90,
       slowAfterMin: 30,
@@ -50,7 +49,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
               repoPath: "/Users/yogesh/code/chatsupport-web",
               baseBranch: "main",
               remote: "origin",
-              tracker: { kind: "jira", query: 'project = CSW AND assignee = currentUser() AND status = "To Do" ORDER BY priority DESC', searchCommand: DEFAULT_JIRA_SEARCH, commentCommand: DEFAULT_JIRA_COMMENT, transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo" },
+              tracker: { kind: "jira", query: 'project = CSW AND assignee = currentUser() AND status = "To Do" ORDER BY priority DESC', searchCommand: DEFAULT_JIRA_SEARCH, commentCommand: DEFAULT_JIRA_COMMENT, transitionCommand: "", doneStatus: "Done", repo: "" },
               mcpJson: JSON.stringify(
                 {
                   mcpServers: {
@@ -78,7 +77,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
               repoPath: "/Users/yogesh/code/setmore-api",
               baseBranch: "develop",
               remote: "origin",
-              tracker: { kind: "jira", query: "project = SET AND assignee = currentUser() AND labels = handsfree", searchCommand: DEFAULT_JIRA_SEARCH, commentCommand: DEFAULT_JIRA_COMMENT, transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo" },
+              tracker: { kind: "jira", query: "project = SET AND assignee = currentUser() AND labels = handsfree", searchCommand: DEFAULT_JIRA_SEARCH, commentCommand: DEFAULT_JIRA_COMMENT, transitionCommand: "", doneStatus: "Done", repo: "" },
               mcpJson: '{\n  "mcpServers": {}\n}',
               agents: agents(["Grok", "Claude Code"]),
               promptExtra: "",
@@ -122,7 +121,7 @@ const pr = (number: number, repo: string, over: Partial<PrInfo> = {}): PrInfo =>
 });
 
 function demoState(scenario: DemoOptions["scenario"]): EngineState {
-  if (scenario === "empty") return { tickets: {}, pollErrors: {}, prCheckErrors: {}, accounts: { setmore: { loggedIn: false }, linear: { loggedIn: false } }, routines: {} };
+  if (scenario === "empty") return { tickets: {}, pollErrors: {}, prCheckErrors: {}, accounts: { setmore: { loggedIn: false } }, routines: {} };
   const list: Ticket[] = [
     t({
       key: "CSW-1421",
@@ -246,7 +245,7 @@ function demoState(scenario: DemoOptions["scenario"]): EngineState {
     nextPollAt: new Date(Date.now() + 9 * 60_000).toISOString(),
     pollErrors: {},
     prCheckErrors: {},
-    accounts: { setmore: { loggedIn: true, user: "yogesh@anywhere.co" }, linear: { loggedIn: true, user: "yogesh@anywhere.co" } },
+    accounts: { setmore: { loggedIn: true, user: "yogesh@anywhere.co" } },
     routines: {
       r1: {
         nextRunAt: tomorrowAt(10),
@@ -357,18 +356,6 @@ export function createMockApi(opts: DemoOptions): Api {
     setmoreLogout: async () => {
       state = { ...state, accounts: { ...state.accounts, setmore: { loggedIn: false } } };
       emit({ type: "account", name: "setmore", status: state.accounts.setmore });
-    },
-    linearStatus: async () => state.accounts.linear,
-    linearLogin: async () => {
-      setTimeout(() => {
-        state = { ...state, accounts: { ...state.accounts, linear: { loggedIn: true, user: "yogesh@anywhere.co" } } };
-        emit({ type: "account", name: "linear", status: state.accounts.linear });
-      }, 1000);
-      return { url: "https://mcp.linear.app/authorize?demo=1" };
-    },
-    linearLogout: async () => {
-      state = { ...state, accounts: { ...state.accounts, linear: { loggedIn: false } } };
-      emit({ type: "account", name: "linear", status: state.accounts.linear });
     },
     publish: async (k) => {
       const t = state.tickets[k];

@@ -15,7 +15,7 @@ export interface StepResult {
 
 export interface TrackerAdapter {
   readonly kind: TrackerKind;
-  /** "Jira ticket" / "GitHub issue" / "Linear issue" — for prompts and logs. */
+  /** "Jira ticket" / "GitHub issue" — for prompts and logs. */
   readonly noun: string;
   search(): Promise<FoundIssue[]>;
   comment(t: TicketRef, body: string): Promise<StepResult>;

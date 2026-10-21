@@ -10,7 +10,6 @@ import {
   LEGACY_JIRA_SEARCH,
   DEFAULT_AGENT_MESSAGE_COMMAND,
   DEFAULT_DONE_STATUS,
-  DEFAULT_LINEAR_ACCOUNT,
   DEFAULT_SETMORE_ACCOUNT,
   SETMORE_REQUIRED_SCOPE,
   DEFAULT_TEMPLATES,
@@ -45,18 +44,15 @@ export const DEFAULT_SETTINGS: Settings = {
   paused: false,
   notifications: true,
   launchAtLogin: false,
-  accounts: { setmore: { ...DEFAULT_SETMORE_ACCOUNT }, linear: { ...DEFAULT_LINEAR_ACCOUNT } },
+  accounts: { setmore: { ...DEFAULT_SETMORE_ACCOUNT } },
 };
 
 export function normalizeSettings(raw: Partial<Settings> | undefined): Settings {
   const s = { ...DEFAULT_SETTINGS, ...(raw || {}) };
-  s.accounts = {
-    setmore: { ...DEFAULT_SETMORE_ACCOUNT, ...(raw?.accounts?.setmore || {}) },
-    linear: { ...DEFAULT_LINEAR_ACCOUNT, ...(raw?.accounts?.linear || {}) },
-  };
+  // Only known accounts are kept, so keys of removed ones (an old "linear") are dropped on the next save.
+  s.accounts = { setmore: { ...DEFAULT_SETMORE_ACCOUNT, ...(raw?.accounts?.setmore || {}) } };
   s.accounts.setmore.redirectPort = clamp(s.accounts.setmore.redirectPort, 1024, 65535, DEFAULT_SETMORE_ACCOUNT.redirectPort);
   s.accounts.setmore.scopes = withRequiredScope(s.accounts.setmore.scopes, SETMORE_REQUIRED_SCOPE);
-  s.accounts.linear.redirectPort = clamp(s.accounts.linear.redirectPort, 1024, 65535, DEFAULT_LINEAR_ACCOUNT.redirectPort);
   s.prPollIntervalMin = clamp(s.prPollIntervalMin, 1, 60, DEFAULT_SETTINGS.prPollIntervalMin);
   return s;
 }
@@ -106,11 +102,13 @@ export function normalizeTracker(p: Partial<ProjectConfig> & LegacyJiraFields): 
       transitionCommand: "",
       doneStatus: "Done",
       repo: "",
-      linearAssignee: "me",
-      linearState: "Todo",
     };
   }
-  const kind: TrackerKind = t.kind === "github" || t.kind === "linear" ? t.kind : "jira";
+  if (removedTracker(t)) {
+    // Linear support was removed: keep the project but as an unpolled Jira one with no query, until you pick a tracker.
+    return { kind: "jira", query: "", searchCommand: "", commentCommand: "", transitionCommand: "", doneStatus: DEFAULT_DONE_STATUS.jira, repo: "" };
+  }
+  const kind: TrackerKind = t.kind === "github" ? t.kind : "jira";
   return {
     kind,
     query: t.query || "",
@@ -120,20 +118,28 @@ export function normalizeTracker(p: Partial<ProjectConfig> & LegacyJiraFields): 
     transitionCommand: t.transitionCommand ?? "",
     doneStatus: t.doneStatus ?? DEFAULT_DONE_STATUS[kind],
     repo: t.repo || "",
-    linearAssignee: t.linearAssignee ?? "me",
-    linearState: t.linearState ?? "Todo",
   };
 }
 
+export const LINEAR_REMOVED_NOTICE = "Linear is no longer supported, pick Jira or GitHub";
+
+/** A saved tracker whose kind HandsFree no longer supports (only Linear so far). */
+function removedTracker(t: { kind?: unknown } | undefined) {
+  return t?.kind === "linear";
+}
+
 export function normalizeProject(p: Partial<ProjectConfig> & LegacyJiraFields): ProjectConfig {
+  const removed = removedTracker(p.tracker);
+  const trackerNotice = removed ? LINEAR_REMOVED_NOTICE : p.trackerNotice || undefined;
   return {
     id: p.id || cryptoId(),
     name: p.name || "Untitled",
-    enabled: p.enabled ?? true,
+    enabled: removed ? false : p.enabled ?? true,
     repoPath: p.repoPath || "",
     baseBranch: p.baseBranch || "main",
     remote: p.remote || "origin",
     tracker: normalizeTracker(p),
+    ...(trackerNotice ? { trackerNotice } : {}),
     mcpJson: p.mcpJson ?? '{\n  "mcpServers": {}\n}',
     agents: (p.agents || []).slice(0, 4).map((a) => ({
       id: a.id || cryptoId(),
@@ -202,7 +208,7 @@ export function migrateState(raw: Partial<EngineState> | undefined, cfg: Config)
     nextPollAt: raw?.nextPollAt,
     lastPrCheckAt: raw?.lastPrCheckAt,
     nextPrCheckAt: raw?.nextPrCheckAt,
-    accounts: { setmore: raw?.accounts?.setmore || { loggedIn: false }, linear: raw?.accounts?.linear || { loggedIn: false } },
+    accounts: { setmore: raw?.accounts?.setmore || { loggedIn: false } },
     routines: raw?.routines || {},
   };
 }

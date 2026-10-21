@@ -1,13 +1,13 @@
-// Loopback OAuth login (PKCE, 127.0.0.1 redirect) shared by every account HandsFree signs in to (Setmore, Linear).
+// Loopback OAuth login (PKCE, 127.0.0.1 redirect) used by the accounts HandsFree signs in to (Setmore).
 import http from "node:http";
 import { buildAuthorizeUrl, discover, exchangeCode, pkce, randomState, revokeToken, tokensFromResponse, type AuthMeta, type TokenStore } from "./messaging/oauth";
 import type { AccountStatus } from "./types";
 
 const LOGIN_TIMEOUT_MS = 5 * 60_000;
-const TITLES: Record<LoopbackLoginOptions["name"], string> = { setmore: "Setmore", linear: "Linear" };
+const TITLES: Record<LoopbackLoginOptions["name"], string> = { setmore: "Setmore" };
 
 export interface LoopbackLoginOptions {
-  name: "setmore" | "linear";
+  name: "setmore";
   issuer: () => string;
   /** RFC 8707 resource indicator (the MCP server URL). */
   resource: () => string;

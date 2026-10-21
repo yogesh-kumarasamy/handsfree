@@ -12,7 +12,6 @@ import {
   DEFAULT_JIRA_SEARCH,
   DEFAULT_JIRA_TRANSITION,
   TRACKER_NOUN,
-  type AccountStatus,
   type AgentConfig,
   type Config,
   type FoundIssue,
@@ -103,8 +102,6 @@ function blankProject(): ProjectConfig {
       transitionCommand: "",
       doneStatus: "Done",
       repo: "",
-      linearAssignee: "me",
-      linearState: "Todo",
     },
     mcpJson: '{\n  "mcpServers": {}\n}',
     agents: AGENT_PRESETS.map((a) => ({ ...a, id: uid(), exhaustionPatterns: [...a.exhaustionPatterns] })),
@@ -210,6 +207,7 @@ export function Projects({
                   <button className="btn sm" onClick={() => setEditing(p.id)}>Edit</button>
                 </div>
                 <div className="jql" title={p.tracker.query}>{TRACKER_LABEL[p.tracker.kind]}{p.tracker.query ? ` · ${p.tracker.query}` : ""}</div>
+                {p.trackerNotice && <div className="err-text small" style={{ gridColumn: "1 / -1" }}>{p.trackerNotice} — open Edit → Tracker.</div>}
                 <div className="chain" style={{ gridColumn: "1 / -1" }}>
                   {chain.length === 0 && <span className="err-text">No enabled agents</span>}
                   {chain.map((a, i) => (
@@ -233,17 +231,15 @@ const ROUTINES = STEPS.indexOf("Routines");
 /** Always the last step: computed so steps added before it don't shift a literal. */
 const REVIEW = STEPS.length - 1;
 
-const TRACKER_LABEL: Record<TrackerKind, string> = { jira: "Jira", github: "GitHub Issues", linear: "Linear" };
+const TRACKER_LABEL: Record<TrackerKind, string> = { jira: "Jira", github: "GitHub Issues" };
 const TRACKER_INTRO: Record<TrackerKind, string> = {
   jira: "Which tickets to pick up. HandsFree runs this through your Jira CLI (acli), using the login already on your Mac — no tokens stored here. It comments the PR link and, on merge, moves the ticket to the status below.",
   github: "Which issues to pick up. HandsFree runs this through the GitHub CLI (gh), using the login already on your Mac. It comments the PR link and, on merge, closes the issue as completed.",
-  linear: "Which issues to pick up. HandsFree talks to Linear's MCP server with your own Linear login (Settings → Accounts). It comments the PR link and, on merge, moves the issue to the status below.",
 };
-const QUERY_LABEL: Record<TrackerKind, string> = { jira: "JQL", github: "Issue filter", linear: "Text filter" };
+const QUERY_LABEL: Record<TrackerKind, string> = { jira: "JQL", github: "Issue filter" };
 const QUERY_HINT: Record<TrackerKind, string> = {
   jira: "Tip: add a label like labels = handsfree to control exactly what gets picked up. Each ticket is only picked up once.",
   github: "A gh issue list --search filter, e.g. assignee:@me label:handsfree. Open issues only. Keys look like repo#12.",
-  linear: "Optional: only issues matching this text. Combined with the assignee. Keys are Linear's identifiers (ENG-123).",
 };
 
 function ProjectEditor({
@@ -274,15 +270,9 @@ function ProjectEditor({
   const [channelQuery, setChannelQuery] = useState("");
   const [testMsg, setTestMsg] = useState<{ ok: boolean; text: string }>();
   const set = (patch: Partial<ProjectConfig>) => setP((x) => ({ ...x, ...patch }));
-  const setTracker = (patch: Partial<TrackerConfig>) => setP((x) => ({ ...x, tracker: { ...x.tracker, ...patch } }));
+  // Editing the tracker settles a tracker notice (the project is polled again once saved and enabled).
+  const setTracker = (patch: Partial<TrackerConfig>) => setP((x) => ({ ...x, tracker: { ...x.tracker, ...patch }, trackerNotice: undefined }));
   const tk = p.tracker;
-  const [linear, setLinear] = useState<AccountStatus>();
-  useEffect(() => {
-    api.linearStatus().then(setLinear).catch(() => {});
-    return api.subscribe((e) => {
-      if (e.type === "account" && e.name === "linear") setLinear(e.status);
-    });
-  }, []);
 
   // Demo screenshots: pre-fill.
   useEffect(() => {
@@ -342,8 +332,7 @@ function ProjectEditor({
     !p.name.trim() && "Give the project a name",
     !p.repoPath && "Choose a repository",
     repo && !repo.ok && "The folder isn't a git repository",
-    p.tracker.kind !== "linear" && !p.tracker.query.trim() && (p.tracker.kind === "jira" ? "Add a JQL" : "Add a tracker query"),
-    p.tracker.kind === "linear" && !p.tracker.query.trim() && !p.tracker.linearState.trim() && "Set a Linear status or a text filter",
+    !p.tracker.query.trim() && (p.tracker.kind === "jira" ? "Add a JQL" : "Add a tracker query"),
     mcpError && "MCP JSON is invalid",
     namingProblem(p.naming),
     enabledAgents.length === 0 && "Enable at least one agent with a command",
@@ -477,7 +466,6 @@ function ProjectEditor({
                 >
                   <option value="jira">Jira</option>
                   <option value="github">GitHub Issues</option>
-                  <option value="linear">Linear</option>
                 </select>
               </div>
               {tk.kind === "github" && (
@@ -487,30 +475,16 @@ function ProjectEditor({
                   <span className="hint">Empty = from the project's <span className="mono">{p.remote}</span> remote.</span>
                 </div>
               )}
-              {tk.kind === "linear" && (
-                <div className="field">
-                  <label>Assignee</label>
-                  <input className="input code" value={tk.linearAssignee} placeholder="me" onChange={(e) => setTracker({ linearAssignee: e.target.value })} />
-                  <span className="hint"><span className="mono">me</span>, a name or email · empty = anyone.</span>
-                </div>
-              )}
-              {tk.kind === "linear" && (
-                <div className="field">
-                  <label>Pick up issues in status</label>
-                  <input className="input code" value={tk.linearState} placeholder="Todo" onChange={(e) => setTracker({ linearState: e.target.value })} />
-                  <span className="hint">Comma-separated names allowed, e.g. <span className="mono">Todo, Backlog</span>. Done, canceled and archived issues are never picked up.</span>
-                </div>
-              )}
             </div>
-            {tk.kind === "linear" && linear && !linear.loggedIn && (
-              <div className="callout warn" style={{ marginBottom: 14 }}><span className="t">Sign in to Linear in Settings → Accounts. Until then this project can't find issues.</span></div>
+            {p.trackerNotice && (
+              <div className="callout warn" style={{ marginBottom: 14 }}><span className="t">{p.trackerNotice}</span></div>
             )}
             <div className="field">
               <label>{QUERY_LABEL[tk.kind]}</label>
               {tk.kind === "jira" ? (
                 <textarea className="textarea code" rows={3} value={tk.query} onChange={(e) => setTracker({ query: e.target.value })} />
               ) : (
-                <input className="input code" value={tk.query} placeholder={tk.kind === "github" ? "assignee:@me label:handsfree" : "optional text, e.g. handsfree"} onChange={(e) => setTracker({ query: e.target.value })} />
+                <input className="input code" value={tk.query} placeholder="assignee:@me label:handsfree" onChange={(e) => setTracker({ query: e.target.value })} />
               )}
               <span className="hint">{QUERY_HINT[tk.kind]}</span>
             </div>
@@ -533,29 +507,27 @@ function ProjectEditor({
                 {tk.kind === "github" ? "Any value closes the issue as completed" : `The ${TRACKER_NOUN[tk.kind]} is moved to this status when its PR merges`} · leave empty to never move the ticket.
               </span>
             </div>
-            {tk.kind !== "linear" && (
-              <details>
-                <summary className="small muted" style={{ cursor: "pointer", marginBottom: 12 }}>Advanced: CLI commands</summary>
-                <div className="field">
-                  <label>Search command</label>
-                  <input className="input code" value={tk.searchCommand} placeholder={tk.kind === "jira" ? DEFAULT_JIRA_SEARCH : DEFAULT_GITHUB_SEARCH} onChange={(e) => setTracker({ searchCommand: e.target.value })} />
-                  <span className="hint">
-                    {tk.kind === "jira" ? <><span className="mono">{"{jql}"}</span> is filled in for you. Must print JSON (or any text containing issue keys).</> : <><span className="mono">{"{repo} {query}"}</span> are filled in. Must print <span className="mono">--json number,title,body,url</span> (or lines like <span className="mono">#12 Title</span>).</>}{" "}
-                    Empty = default.
-                  </span>
-                </div>
-                <div className="field">
-                  <label>Comment command</label>
-                  <input className="input code" value={tk.commentCommand} placeholder={tk.kind === "jira" ? DEFAULT_JIRA_COMMENT : DEFAULT_GITHUB_COMMENT} onChange={(e) => setTracker({ commentCommand: e.target.value })} />
-                  <span className="hint"><span className="mono">{tk.kind === "jira" ? "{issue_key} {body}" : "{number} {repo} {body} {issue_key}"}</span> are filled in. Empty = default · <span className="mono">-</span> = never comment.</span>
-                </div>
-                <div className="field">
-                  <label>{tk.kind === "jira" ? "Transition command" : "Close command"}</label>
-                  <input className="input code" value={tk.transitionCommand} placeholder={tk.kind === "jira" ? DEFAULT_JIRA_TRANSITION : DEFAULT_GITHUB_CLOSE} onChange={(e) => setTracker({ transitionCommand: e.target.value })} />
-                  <span className="hint"><span className="mono">{tk.kind === "jira" ? "{issue_key} {status}" : "{number} {repo} {status} {issue_key}"}</span> are filled in. Empty = default.</span>
-                </div>
-              </details>
-            )}
+            <details>
+              <summary className="small muted" style={{ cursor: "pointer", marginBottom: 12 }}>Advanced: CLI commands</summary>
+              <div className="field">
+                <label>Search command</label>
+                <input className="input code" value={tk.searchCommand} placeholder={tk.kind === "jira" ? DEFAULT_JIRA_SEARCH : DEFAULT_GITHUB_SEARCH} onChange={(e) => setTracker({ searchCommand: e.target.value })} />
+                <span className="hint">
+                  {tk.kind === "jira" ? <><span className="mono">{"{jql}"}</span> is filled in for you. Must print JSON (or any text containing issue keys).</> : <><span className="mono">{"{repo} {query}"}</span> are filled in. Must print <span className="mono">--json number,title,body,url</span> (or lines like <span className="mono">#12 Title</span>).</>}{" "}
+                  Empty = default.
+                </span>
+              </div>
+              <div className="field">
+                <label>Comment command</label>
+                <input className="input code" value={tk.commentCommand} placeholder={tk.kind === "jira" ? DEFAULT_JIRA_COMMENT : DEFAULT_GITHUB_COMMENT} onChange={(e) => setTracker({ commentCommand: e.target.value })} />
+                <span className="hint"><span className="mono">{tk.kind === "jira" ? "{issue_key} {body}" : "{number} {repo} {body} {issue_key}"}</span> are filled in. Empty = default · <span className="mono">-</span> = never comment.</span>
+              </div>
+              <div className="field">
+                <label>{tk.kind === "jira" ? "Transition command" : "Close command"}</label>
+                <input className="input code" value={tk.transitionCommand} placeholder={tk.kind === "jira" ? DEFAULT_JIRA_TRANSITION : DEFAULT_GITHUB_CLOSE} onChange={(e) => setTracker({ transitionCommand: e.target.value })} />
+                <span className="hint"><span className="mono">{tk.kind === "jira" ? "{issue_key} {status}" : "{number} {repo} {status} {issue_key}"}</span> are filled in. Empty = default.</span>
+              </div>
+            </details>
           </>
         )}
 
@@ -722,7 +694,7 @@ function ProjectEditor({
               <dt>Name</dt><dd>{p.name || <span className="err-text">missing</span>}</dd>
               <dt>Repository</dt><dd className="mono">{p.repoPath || <span className="err-text">missing</span>}</dd>
               <dt>Base / remote</dt><dd className="mono">{p.baseBranch} · {p.remote}</dd>
-              <dt>Tracker</dt><dd>{TRACKER_LABEL[p.tracker.kind]}{p.tracker.kind === "github" ? ` · ${p.tracker.repo || `repo from ${p.remote}`}` : p.tracker.kind === "linear" ? ` · assignee ${p.tracker.linearAssignee || "anyone"} · status ${p.tracker.linearState || "any"}` : ""}</dd>
+              <dt>Tracker</dt><dd>{TRACKER_LABEL[p.tracker.kind]}{p.tracker.kind === "github" ? ` · ${p.tracker.repo || `repo from ${p.remote}`}`  : ""}</dd>
               <dt>Query</dt><dd className="mono">{p.tracker.query || <span className="muted">none</span>}</dd>
               <dt>On merge</dt><dd>{p.tracker.doneStatus.trim() ? (p.tracker.kind === "github" ? "Issue closed as completed" : `Moved to “${p.tracker.doneStatus}”`) : "Ticket status left as is"}</dd>
               <dt>MCP servers</dt><dd>{mcpError ? <span className="err-text">invalid JSON</span> : mcpServers.join(", ") || "none"}</dd>

@@ -5,7 +5,7 @@ import { checkName, commitRule, conformSubject, DEFAULT_NAMING, renderName, type
 import { keyedLock } from "./lock";
 import { createStreamFormatter } from "./streamfmt";
 import { failedCheckLogs, fetchPr, openPr, publishPr } from "./github";
-import { ClientStore, TokenStore } from "./messaging/oauth";
+import { TokenStore } from "./messaging/oauth";
 import { MessagingService } from "./messaging/service";
 import { PrEvents } from "./prevents";
 import { RoutineService } from "./routines/service";
@@ -67,15 +67,8 @@ export class Orchestrator {
     notify: (t, b) => this.notify(t, b, "info"),
     messaging: this.messaging,
   });
-  /** Ticket trackers (Jira / GitHub Issues / Linear) and the Linear account. */
-  trackers = new TrackerService({
-    config: () => this.config,
-    state: () => this.state,
-    persist: () => this.persist(),
-    emit: (e) => this.emit(e),
-    tokens: new TokenStore(path.join(DATA_DIR, "auth", "linear.json")),
-    client: new ClientStore(path.join(DATA_DIR, "auth", "linear-client.json")),
-  });
+  /** Ticket trackers (Jira / GitHub Issues). */
+  trackers = new TrackerService();
   private prTimer?: NodeJS.Timeout;
   private checkingPrs = false;
 
@@ -94,7 +87,6 @@ export class Orchestrator {
     this.prEvents.on((e) => void this.messaging.onPrEvent(e));
     this.messaging.init();
     this.routines.start();
-    this.trackers.init();
     this.schedulePoll(3000);
     this.schedulePrCheck(5000);
   }
@@ -162,7 +154,6 @@ export class Orchestrator {
     // Account settings (client id, URLs) may have changed: the next messaging call builds a fresh adapter.
     this.messaging.settingsChanged();
     this.routines.configChanged();
-    this.trackers.settingsChanged();
     saveConfig(this.config);
     this.emit({ type: "config", config: this.config });
     if (prevInterval !== this.config.settings.pollIntervalMin || (wasPaused && !this.config.settings.paused)) this.schedulePoll(1000);
@@ -191,7 +182,8 @@ export class Orchestrator {
     this.polling = true;
     try {
       if (!this.config.settings.paused) {
-        for (const p of this.config.projects.filter((x) => x.enabled)) {
+        // A project with a tracker notice (its saved tracker kind was removed) waits until you pick a tracker.
+        for (const p of this.config.projects.filter((x) => x.enabled && !x.trackerNotice)) {
           try {
             const tracker = this.trackers.trackerFor(p);
             const issues = await tracker.search();
@@ -903,7 +895,6 @@ export class Orchestrator {
   shutdown() {
     this.messaging.shutdown();
     this.routines.shutdown();
-    this.trackers.shutdown();
     clearTimeout(this.prTimer);
     for (const r of this.running.values()) r?.kill();
   }
