@@ -59,7 +59,7 @@ export interface Settings {
   paused: boolean;
   notifications: boolean;
   launchAtLogin: boolean;
-  accounts: { setmore: SetmoreAccountSettings; linear: LinearAccountSettings };
+  accounts: { linear: LinearAccountSettings };
 }
 
 export interface Config {
@@ -133,7 +133,7 @@ export interface FixContext {
   requestedAt: string;
 }
 
-export type MessagingPlatform = "none" | "setmore" | "agent";
+export type MessagingPlatform = "none" | "agent";
 
 export interface MessageTemplates {
   reviewReady: string;
@@ -144,22 +144,13 @@ export interface MessageTemplates {
 
 export interface MessagingConfig {
   platform: MessagingPlatform;
-  /** Channel id on the platform (Setmore channelId). */
+  /** Setmore collab channel id (the agent passes it to send_message). */
   channelId: string;
   /** Display name, cached from the channel picker. */
   channelName: string;
   templates: MessageTemplates;
   /** platform "agent" only: command template; {prompt} is filled (shell-quoted). */
   agentCommand: string;
-}
-
-export interface SetmoreAccountSettings {
-  clientId: string;
-  /** Loopback port for the OAuth redirect; must match the registered redirect URI. */
-  redirectPort: number;
-  mcpUrl: string;
-  issuer: string;
-  scopes: string;
 }
 
 export type TrackerKind = "jira" | "github" | "linear";
@@ -236,21 +227,6 @@ export const DEFAULT_TEMPLATES: MessageTemplates = {
 export const DEFAULT_AGENT_MESSAGE_COMMAND =
   "claude -p {prompt} --output-format json --max-turns 4 --allowedTools mcp__claude_ai_Setmore__send_message,mcp__claude_ai_Setmore__list_channels";
 
-/**
- * The one scope every token must hold to reach any tool on the Setmore MCP server (its brand's
- * `required-scope`; ScopeAuthorizationManager answers 403 without it). The awapis.* scopes are what
- * AWApi's Connect endpoints check upstream: streams.read for list_channels, chat.streams.push for send_message.
- */
-export const SETMORE_REQUIRED_SCOPE = "setmore.apis-internal.fullaccess";
-
-export const DEFAULT_SETMORE_ACCOUNT: SetmoreAccountSettings = {
-  clientId: "",
-  redirectPort: 47831,
-  mcpUrl: "https://mcp.setmore.com/mcp",
-  issuer: "https://auth.setmore.com/o",
-  scopes: `openid offline_access ${SETMORE_REQUIRED_SCOPE} awapis.chat.streams.push awapis.streams.read awapis.users.read`,
-};
-
 export type PrEventKind = "review_ready" | "merge_nudge" | "merged" | "ci_fix_exhausted";
 
 export interface PrEvent {
@@ -321,7 +297,7 @@ export interface EngineState {
   nextPrCheckAt?: string;
   /** Per ticket key: the last `gh` error from the PR check. */
   prCheckErrors: Record<string, string>;
-  accounts: { setmore: AccountStatus; linear: AccountStatus };
+  accounts: { linear: AccountStatus };
   routines: Record<string /* routine id */, RoutineState>;
 }
 
@@ -341,7 +317,7 @@ export type EngineEvent =
   | { type: "config"; config: Config }
   | { type: "log"; key: string; chunk: string }
   | { type: "notify"; title: string; body: string; kind: NotifyKind }
-  | { type: "account"; name: "setmore" | "linear"; status: AccountStatus };
+  | { type: "account"; name: "linear"; status: AccountStatus };
 
 export type NotifyKind = "pr" | "fallback" | "failed" | "slow" | "info";
 

@@ -74,10 +74,10 @@ test("decodeIdClaims: payload only, tolerant of garbage", () => {
 
 test("TokenStore: save is 0600, load round-trips, clear removes", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hf-tok-"));
-  const store = new TokenStore(path.join(dir, "auth", "setmore.json"));
+  const store = new TokenStore(path.join(dir, "auth", "linear.json"));
   assert.equal(store.load(), undefined);
   store.save({ accessToken: "a", refreshToken: "r", expiresAt: "2026-10-15T11:00:00.000Z" });
-  assert.equal((fs.statSync(path.join(dir, "auth", "setmore.json")).mode & 0o777).toString(8), "600");
+  assert.equal((fs.statSync(path.join(dir, "auth", "linear.json")).mode & 0o777).toString(8), "600");
   assert.equal(store.load().refreshToken, "r");
   store.clear();
   assert.equal(store.load(), undefined);

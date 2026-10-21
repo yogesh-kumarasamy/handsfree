@@ -13,6 +13,8 @@ async function doctor(o: Orchestrator) {
   // acli only matters to projects that use Jira.
   if (o.config.projects.some((p) => p.tracker.kind === "jira")) names.add("acli");
   for (const p of o.config.projects) for (const a of p.agents) if (a.enabled && a.command.trim()) names.add(a.command.trim().split(/\s+/)[0]);
+  // Collab messages go through the agent command (default `claude` with its Setmore connector): its binary must be on PATH.
+  for (const p of o.config.projects) if (p.messaging.platform === "agent" && p.messaging.agentCommand.trim()) names.add(p.messaging.agentCommand.trim().split(/\s+/)[0]);
   const items = await Promise.all(
     [...names].map(async (name) => {
       // Probes run in a scratch folder: an agent tool is whatever the user configured, and the engine's own
@@ -164,17 +166,6 @@ export function startServer(o: Orchestrator, port: number, token: string) {
             return send(200, { channels: [], error: (e as Error).message });
           }
         }
-        case "GET /api/accounts/setmore":
-          return send(200, o.messaging.status());
-        case "POST /api/accounts/setmore/login":
-          try {
-            return send(200, { url: await o.messaging.loginUrl() });
-          } catch (e) {
-            return send(400, { error: (e as Error).message });
-          }
-        case "POST /api/accounts/setmore/logout":
-          await o.messaging.logout();
-          return send(200, {});
         case "GET /api/accounts/linear":
           return send(200, o.trackers.status());
         case "POST /api/accounts/linear/login":

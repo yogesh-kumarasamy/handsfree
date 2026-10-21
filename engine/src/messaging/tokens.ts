@@ -1,10 +1,10 @@
-// Access-token upkeep for an MCP account (Setmore, Linear): load, refresh early, one refresh at a time, report status.
+// Access-token upkeep for an MCP account (Linear): load, refresh early, one refresh at a time, report status.
 import type { AccountStatus } from "../types";
 import { AuthError } from "./mcpclient";
 import { discover, OAuthError, refreshTokens, tokensFromResponse, type AuthMeta, type TokenStore } from "./oauth";
 
 export interface TokenKeeperSettings {
-  /** "Setmore" / "Linear" — used in user-facing errors. */
+  /** "Linear" — used in user-facing errors. */
   label: string;
   issuer: string;
   /** RFC 8707 resource (the MCP server URL). */
