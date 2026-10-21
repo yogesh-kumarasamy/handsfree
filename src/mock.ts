@@ -50,7 +50,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
               repoPath: "/Users/yogesh/code/chatsupport-web",
               baseBranch: "main",
               remote: "origin",
-              tracker: { kind: "jira", query: 'project = CSW AND assignee = currentUser() AND status = "To Do" ORDER BY priority DESC', searchCommand: DEFAULT_JIRA_SEARCH, commentCommand: DEFAULT_JIRA_COMMENT, transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo" },
+              tracker: { kind: "jira", query: 'project = CSW AND assignee = currentUser() AND status = "To Do" ORDER BY priority DESC', searchCommand: DEFAULT_JIRA_SEARCH, commentCommand: DEFAULT_JIRA_COMMENT, transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo", pickupLabel: "PICKUP_READY", inProgressStatus: "In Progress" },
               mcpJson: JSON.stringify(
                 {
                   mcpServers: {
@@ -78,7 +78,7 @@ function demoConfig(scenario: DemoOptions["scenario"]): Config {
               repoPath: "/Users/yogesh/code/setmore-api",
               baseBranch: "develop",
               remote: "origin",
-              tracker: { kind: "jira", query: "project = SET AND assignee = currentUser() AND labels = handsfree", searchCommand: DEFAULT_JIRA_SEARCH, commentCommand: DEFAULT_JIRA_COMMENT, transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo" },
+              tracker: { kind: "jira", query: "project = SET AND assignee = currentUser() AND labels = handsfree", searchCommand: DEFAULT_JIRA_SEARCH, commentCommand: DEFAULT_JIRA_COMMENT, transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo", pickupLabel: "PICKUP_READY", inProgressStatus: "In Progress" },
               mcpJson: '{\n  "mcpServers": {}\n}',
               agents: agents(["Grok", "Claude Code"]),
               promptExtra: "",
@@ -122,7 +122,7 @@ const pr = (number: number, repo: string, over: Partial<PrInfo> = {}): PrInfo =>
 });
 
 function demoState(scenario: DemoOptions["scenario"]): EngineState {
-  if (scenario === "empty") return { tickets: {}, pollErrors: {}, prCheckErrors: {}, accounts: { setmore: { loggedIn: false }, linear: { loggedIn: false } }, routines: {} };
+  if (scenario === "empty") return { tickets: {}, pollErrors: {}, pollCheckedAt: {}, prCheckErrors: {}, accounts: { setmore: { loggedIn: false }, linear: { loggedIn: false } }, routines: {} };
   const list: Ticket[] = [
     t({
       key: "CSW-1421",
@@ -159,6 +159,8 @@ function demoState(scenario: DemoOptions["scenario"]): EngineState {
       createdAt: ago(42),
     }),
     t({ key: "CSW-1425", projectId: "p1", summary: "Persist agent's last-used canned response", status: "queued", createdAt: ago(3) }),
+    t({ key: "CSW-1431", projectId: "p1", summary: "Widget is “slow sometimes” — needs repro steps", status: "awaiting_pickup", labels: ["support"], issueUrl: "https://example.atlassian.net/browse/CSW-1431", createdAt: ago(40) }),
+    t({ key: "CSW-1433", projectId: "p1", summary: "Add keyboard shortcut to close the chat panel", status: "awaiting_pickup", createdAt: ago(12) }),
     t({
       key: "CSW-1398",
       projectId: "p1",
@@ -244,7 +246,9 @@ function demoState(scenario: DemoOptions["scenario"]): EngineState {
     lastPrCheckAt: ago(2),
     nextPrCheckAt: new Date(Date.now() + 60_000).toISOString(),
     nextPollAt: new Date(Date.now() + 9 * 60_000).toISOString(),
-    pollErrors: {},
+    // A login that expired since the last poll: Retry now clears it once the login is fixed.
+    pollErrors: { p2: "Jira search failed (exit 1): ✗ Error: unauthorized: use 'acli [product] auth login' to authenticate" },
+    pollCheckedAt: { p1: ago(6), p2: ago(6) },
     prCheckErrors: {},
     accounts: { setmore: { loggedIn: true, user: "yogesh@anywhere.co" }, linear: { loggedIn: true, user: "yogesh@anywhere.co" } },
     routines: {
@@ -320,6 +324,12 @@ export function createMockApi(opts: DemoOptions): Api {
       emit({ type: "config", config });
     },
     pollNow: ok,
+    pollProject: async (id) => {
+      const { [id]: _, ...rest } = state.pollErrors;
+      state = { ...state, pollErrors: rest, pollCheckedAt: { ...state.pollCheckedAt, [id]: new Date().toISOString() } };
+      emit({ type: "state", state });
+      return { ok: true, found: 3, checkedAt: state.pollCheckedAt[id] };
+    },
     checkPrsNow: ok,
     sendMessage: async (k, text) => {
       const t = state.tickets[k];
@@ -378,6 +388,13 @@ export function createMockApi(opts: DemoOptions): Api {
       }
     },
     fixCi: ok,
+    pickupReady: async (k) => {
+      const t = state.tickets[k];
+      if (t?.status === "awaiting_pickup") {
+        state = { ...state, tickets: { ...state.tickets, [k]: { ...t, status: "queued", labels: [...(t.labels || []), "PICKUP_READY"] } } };
+        emit({ type: "state", state });
+      }
+    },
     retry: ok,
     stop: ok,
     cleanup: ok,

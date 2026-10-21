@@ -62,7 +62,7 @@ export function startServer(o: Orchestrator, port: number, token: string) {
     };
 
     try {
-      const m = url.pathname.match(/^\/api\/tickets\/([^/]+)\/(retry|stop|cleanup|forget|log|open|takeover|handback|publish|fix-ci|message|feedback)$/);
+      const m = url.pathname.match(/^\/api\/tickets\/([^/]+)\/(retry|stop|cleanup|forget|log|open|takeover|handback|publish|fix-ci|message|feedback|pickup-ready)$/);
       if (m) {
         const key = decodeURIComponent(m[1]);
         if (m[2] === "feedback") {
@@ -82,9 +82,10 @@ export function startServer(o: Orchestrator, port: number, token: string) {
             return send(400, { error: (e as Error).message });
           }
         }
-        if (m[2] === "publish" || m[2] === "fix-ci") {
+        if (m[2] === "publish" || m[2] === "fix-ci" || m[2] === "pickup-ready") {
           try {
             if (m[2] === "publish") await o.publish(key);
+            else if (m[2] === "pickup-ready") await o.markPickupReady(key);
             else await o.fixCi(key);
             return send(200, {});
           } catch (e) {
@@ -113,6 +114,14 @@ export function startServer(o: Orchestrator, port: number, token: string) {
         if (m[2] === "cleanup") await o.cleanup(key);
         if (m[2] === "forget") o.forget(key);
         return send(200, {});
+      }
+      const pm = url.pathname.match(/^\/api\/projects\/([^/]+)\/poll$/);
+      if (pm && req.method === "POST") {
+        try {
+          return send(200, await o.pollProjectNow(decodeURIComponent(pm[1])));
+        } catch (e) {
+          return send(400, { error: (e as Error).message });
+        }
       }
       const rm = url.pathname.match(/^\/api\/routines\/([^/]+)\/(run|log)$/);
       if (rm) {

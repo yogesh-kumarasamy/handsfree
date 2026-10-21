@@ -1,8 +1,8 @@
 // Jira through the Atlassian CLI (`acli`), using the login already on the Mac.
 import { issueTypeOf } from "../naming";
 import { fill } from "../shell";
-import { DEFAULT_JIRA_COMMENT, DEFAULT_JIRA_SEARCH, DEFAULT_JIRA_TRANSITION, TRACKER_NOUN, type FoundIssue } from "../types";
-import { defaultRun, failure, type Run, type TicketRef, type TrackerAdapter, type TrackerProject } from "./adapter";
+import { DEFAULT_JIRA_COMMENT, DEFAULT_JIRA_LABEL, DEFAULT_JIRA_SEARCH, DEFAULT_JIRA_TRANSITION, TRACKER_NOUN, type FoundIssue } from "../types";
+import { defaultRun, failure, hasLabel, type Run, type TicketRef, type TrackerAdapter, type TrackerProject } from "./adapter";
 
 /** A `key` field in the JSON. One-letter project keys are accepted here; the text fallback below stays stricter. */
 const KEY_RE = /^[A-Z][A-Z0-9_]*-\d+$/;
@@ -33,6 +33,8 @@ export function parseIssues(output: string): FoundIssue[] {
       };
       const typeName = f.issuetype?.name ?? o.issuetype?.name;
       if (typeof typeName === "string" && typeName.trim()) issue.type = issueTypeOf(typeName);
+      const labels = f.labels ?? o.labels;
+      if (Array.isArray(labels) && labels.length) issue.labels = labels.map(String);
       found.set(o.key, issue);
       return;
     }
@@ -88,6 +90,13 @@ export class JiraTracker implements TrackerAdapter {
     if (!status.trim()) return { skipped: true };
     const tpl = this.p.tracker.transitionCommand.trim() || DEFAULT_JIRA_TRANSITION;
     const r = await this.run(fill(tpl, { issue_key: t.key, status }), { timeoutMs: 60_000, cwd: this.p.repoPath || undefined });
+    if (r.code !== 0) throw new Error(failure(r).slice(0, 400));
+    return { skipped: false };
+  }
+
+  async addLabel(t: TicketRef, label: string) {
+    const labels = [...(t.labels || []).filter((l) => !hasLabel([l], label)), label].join(",");
+    const r = await this.run(fill(DEFAULT_JIRA_LABEL, { issue_key: t.key, label, labels }), { timeoutMs: 60_000, cwd: this.p.repoPath || undefined });
     if (r.code !== 0) throw new Error(failure(r).slice(0, 400));
     return { skipped: false };
   }

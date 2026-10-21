@@ -57,7 +57,7 @@ test("normalizeProject gives routines: [] and normalizeRoutine fills defaults an
 
 test("normalizeProject: legacy Jira fields migrate into tracker", () => {
   const p = normalizeProject({ id: "p", name: "P", jql: "project = X", jiraSearchCommand: "acli custom {jql}", jiraCommentCommand: "-" });
-  assert.deepEqual(p.tracker, { kind: "jira", query: "project = X", searchCommand: "acli custom {jql}", commentCommand: "-", transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo" });
+  assert.deepEqual(p.tracker, { kind: "jira", query: "project = X", searchCommand: "acli custom {jql}", commentCommand: "-", transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo", pickupLabel: "PICKUP_READY", inProgressStatus: "In Progress" });
   assert.equal("jql" in p, false);
 });
 
@@ -102,11 +102,14 @@ test("normalizeProject: naming defaults to HandsFree's old names with no pattern
   assert.equal(r.naming.branch.template, "handsfree/{key}", "a blank template falls back to the default");
 });
 
-test("normalizeProject: the old default Jira search command gains issuetype so {type} can be derived", () => {
+test("normalizeProject: old default Jira searches gain issuetype and labels ({type}, pickup label)", () => {
   const old = 'acli jira workitem search --jql {jql} --fields "key,summary,description" --limit 50 --json';
   const tracker = { kind: "jira", query: "project = X", searchCommand: old, commentCommand: "", transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "" };
   const p = normalizeProject({ id: "p1", tracker });
-  assert.equal(p.tracker.searchCommand, 'acli jira workitem search --jql {jql} --fields "key,summary,description,issuetype" --limit 50 --json');
+  const now = 'acli jira workitem search --jql {jql} --fields "key,summary,description,issuetype,labels" --limit 50 --json';
+  assert.equal(p.tracker.searchCommand, now);
+  const withType = 'acli jira workitem search --jql {jql} --fields "key,summary,description,issuetype" --limit 50 --json';
+  assert.equal(normalizeProject({ id: "p1", tracker: { ...tracker, searchCommand: withType } }).tracker.searchCommand, now);
   const custom = normalizeProject({ id: "p1", tracker: { ...tracker, searchCommand: "mytool search {jql}" } });
   assert.equal(custom.tracker.searchCommand, "mytool search {jql}");
 });
@@ -126,4 +129,20 @@ test("saved Setmore scopes without the server's required scope get it appended; 
   assert.equal(s.accounts.setmore.scopes, `openid offline_access awapis.chat.streams.push ${required}`);
   assert.equal(s.accounts.setmore.clientId, "cid");
   assert.match(normalizeSettings(undefined).accounts.setmore.scopes, /\bsetmore\.apis-internal\.fullaccess\b/);
+});
+
+test("normalizeProject: pickup label defaults on; in-progress status per kind, never for GitHub", () => {
+  const jira = normalizeProject({ tracker: { kind: "jira", query: "x" } }).tracker;
+  assert.equal(jira.pickupLabel, "PICKUP_READY");
+  assert.equal(jira.inProgressStatus, "In Progress");
+  assert.equal(normalizeProject({ tracker: { kind: "linear" } }).tracker.inProgressStatus, "In Progress");
+  assert.equal(normalizeProject({ tracker: { kind: "github", query: "x", inProgressStatus: "In Progress" } }).tracker.inProgressStatus, "", "GitHub's transition closes the issue");
+  assert.equal(normalizeProject({ tracker: { kind: "jira", query: "x", pickupLabel: "", inProgressStatus: "" } }).tracker.pickupLabel, "", "empty = pick up everything");
+  assert.equal(normalizeProject({ jql: "x" }).tracker.pickupLabel, "PICKUP_READY", "0.1 configs too");
+});
+
+test("normalizeProject: the old default GitHub search gains labels; a custom one is kept", () => {
+  const tracker = { kind: "github", query: "label:hf", searchCommand: "gh issue list --repo {repo} --search {query} --state open --limit 50 --json number,title,body,url" };
+  assert.match(normalizeProject({ tracker }).tracker.searchCommand, /--json number,title,body,url,labels$/);
+  assert.equal(normalizeProject({ tracker: { ...tracker, searchCommand: "gh issue list --repo {repo}" } }).tracker.searchCommand, "gh issue list --repo {repo}");
 });

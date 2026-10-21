@@ -5,6 +5,8 @@ import {
   DEFAULT_TEMPLATES,
   DEFAULT_EXHAUSTION_PATTERNS,
   DEFAULT_DONE_STATUS,
+  DEFAULT_IN_PROGRESS_STATUS,
+  DEFAULT_PICKUP_LABEL,
   DEFAULT_GITHUB_CLOSE,
   DEFAULT_GITHUB_COMMENT,
   DEFAULT_GITHUB_SEARCH,
@@ -33,7 +35,17 @@ import { pickFolder, type Api, type RepoInfo } from "../api";
 import { ago, Icon, Toggle, until } from "../ui";
 
 /** A ticket to preview the naming templates with; the key shape matches what trackers hand out. */
-const NAMING_SAMPLE = { key: "ABC-123", summary: "Add greeting to the README", type: "bug" };
+type NameSample = { key: string; summary: string; type: string };
+/** A key shaped like the ones this project's tracker hands out, so naming rules are checked against what will really arrive. */
+function namingSample(p: Pick<ProjectConfig, "tracker" | "repoPath">): NameSample {
+  const repo = (p.tracker.repo.trim().replace(/\.git$/, "").replace(/\/+$/, "").split("/").pop() || p.repoPath.split("/").filter(Boolean).pop() || "repo").trim();
+  const key = p.tracker.kind === "github" ? `${repo}#12` : p.tracker.kind === "linear" ? "ENG-123" : "ABC-123";
+  return { key, summary: "Add greeting to the README", type: "bug" };
+}
+/** GitHub's issue filter is search qualifiers; Jira JQL there matches nothing and gh doesn't complain. */
+function looksLikeJql(query: string) {
+  return /currentUser\(\)|\s(=|!=)\s|\b(AND|OR|ORDER BY)\b|\bstatus\s*=|\bproject\s*=/.test(query);
+}
 const NAMING_ROWS: { k: keyof NamingConfig; label: string; hint: string }[] = [
   { k: "branch", label: "Branch", hint: "Created at pick-up. {type} comes from the ticket's issue type or labels (bug, feature, spike, improvement…)." },
   { k: "commit", label: "Commit subject", hint: "Used for HandsFree's own commits and told to the agent. Agent commits that don't match the pattern are reworded to the template before the push." },
@@ -41,15 +53,15 @@ const NAMING_ROWS: { k: keyof NamingConfig; label: string; hint: string }[] = [
 ];
 
 /** The first naming rule whose template can't satisfy its own pattern (or whose regex is invalid), as a sentence; "" when all is well. */
-function namingProblem(naming: NamingConfig): string {
+function namingProblem(naming: NamingConfig, sample: NameSample): string {
   for (const row of NAMING_ROWS) {
-    const r = checkName(naming[row.k], NAMING_SAMPLE);
+    const r = checkName(naming[row.k], sample);
     if (!r.ok) return `${row.label} naming: ${r.error}`;
   }
   return "";
 }
 
-function NamingCard({ naming, onChange }: { naming: NamingConfig; onChange: (n: NamingConfig) => void }) {
+function NamingCard({ naming, sample, onChange }: { naming: NamingConfig; sample: NameSample; onChange: (n: NamingConfig) => void }) {
   const setRule = (k: keyof NamingConfig, patch: Partial<NamingRule>) => onChange({ ...naming, [k]: { ...naming[k], ...patch } });
   const copy = (n: NamingConfig): NamingConfig => ({ branch: { ...n.branch }, commit: { ...n.commit }, prTitle: { ...n.prTitle } });
   return (
@@ -57,14 +69,15 @@ function NamingCard({ naming, onChange }: { naming: NamingConfig; onChange: (n: 
       <h3 className="card-title" style={{ marginTop: 22 }}>Naming conventions</h3>
       <p className="card-sub">
         How HandsFree names what it creates, and what each name must match. Templates know <span className="mono">{"{key}"}</span> <span className="mono">{"{summary}"}</span>{" "}
-        <span className="mono">{"{slug}"}</span> <span className="mono">{"{type}"}</span> <span className="mono">{"{type_cc}"}</span> (feat/fix…). A name that fails its pattern stops the ticket before CI ever sees it.
+        <span className="mono">{"{slug}"}</span> <span className="mono">{"{type}"}</span> <span className="mono">{"{type_cc}"}</span> (feat/fix…). A name that fails its pattern stops the ticket before CI ever sees it. Checked here with a key shaped like this tracker's:{" "}
+        <span className="mono">{sample.key}</span>.
       </p>
       <div className="row" style={{ marginBottom: 12 }}>
         <button className="btn sm" onClick={() => onChange(copy(ANYWHERE_NAMING))}>Use Anywhere rules (conventionsbot)</button>
         <button className="btn sm ghost" onClick={() => onChange(copy(DEFAULT_NAMING))}>Reset to HandsFree defaults</button>
       </div>
       {NAMING_ROWS.map((row) => {
-        const r = checkName(naming[row.k], NAMING_SAMPLE);
+        const r = checkName(naming[row.k], sample);
         return (
           <div className="field" key={row.k}>
             <label>{row.label}</label>
@@ -105,6 +118,8 @@ function blankProject(): ProjectConfig {
       repo: "",
       linearAssignee: "me",
       linearState: "Todo",
+      pickupLabel: DEFAULT_PICKUP_LABEL,
+      inProgressStatus: DEFAULT_IN_PROGRESS_STATUS.jira,
     },
     mcpJson: '{\n  "mcpServers": {}\n}',
     agents: AGENT_PRESETS.map((a) => ({ ...a, id: uid(), exhaustionPatterns: [...a.exhaustionPatterns] })),
@@ -242,7 +257,7 @@ const TRACKER_INTRO: Record<TrackerKind, string> = {
 const QUERY_LABEL: Record<TrackerKind, string> = { jira: "JQL", github: "Issue filter", linear: "Text filter" };
 const QUERY_HINT: Record<TrackerKind, string> = {
   jira: "Tip: add a label like labels = handsfree to control exactly what gets picked up. Each ticket is only picked up once.",
-  github: "A gh issue list --search filter, e.g. assignee:@me label:handsfree. Open issues only. Keys look like repo#12.",
+  github: "A gh issue list --search filter (GitHub search qualifiers, not JQL), e.g. assignee:@me label:TO_DO. Open issues only. Keys look like repo#12.",
   linear: "Optional: only issues matching this text. Combined with the assignee. Keys are Linear's identifiers (ENG-123).",
 };
 
@@ -345,7 +360,7 @@ function ProjectEditor({
     p.tracker.kind !== "linear" && !p.tracker.query.trim() && (p.tracker.kind === "jira" ? "Add a JQL" : "Add a tracker query"),
     p.tracker.kind === "linear" && !p.tracker.query.trim() && !p.tracker.linearState.trim() && "Set a Linear status or a text filter",
     mcpError && "MCP JSON is invalid",
-    namingProblem(p.naming),
+    namingProblem(p.naming, namingSample(p)),
     enabledAgents.length === 0 && "Enable at least one agent with a command",
     p.messaging.platform !== "none" && !p.messaging.channelId && "Pick a collab channel (Messaging step)",
     p.routines.some((r) => parseCron(r.schedule) instanceof Error) && "Fix the routine schedule(s)",
@@ -431,7 +446,7 @@ function ProjectEditor({
                 </div>
               </div>
             </div>
-            <NamingCard naming={p.naming} onChange={(naming) => set({ naming })} />
+            <NamingCard naming={p.naming} sample={namingSample(p)} onChange={(naming) => set({ naming })} />
             <h3 className="card-title" style={{ marginTop: 22 }}>After the PR opens</h3>
             <p className="card-sub">HandsFree keeps checking the PR on GitHub (Settings → <i>Check PRs every</i>).</p>
             <div className="grid3">
@@ -471,7 +486,7 @@ function ProjectEditor({
                   value={tk.kind}
                   onChange={(e) => {
                     const kind = e.target.value as TrackerKind;
-                    setTracker({ kind, doneStatus: DEFAULT_DONE_STATUS[kind], searchCommand: "", commentCommand: "", transitionCommand: "" });
+                    setTracker({ kind, doneStatus: DEFAULT_DONE_STATUS[kind], inProgressStatus: DEFAULT_IN_PROGRESS_STATUS[kind], searchCommand: "", commentCommand: "", transitionCommand: "" });
                     setJira(undefined);
                   }}
                 >
@@ -513,6 +528,15 @@ function ProjectEditor({
                 <input className="input code" value={tk.query} placeholder={tk.kind === "github" ? "assignee:@me label:handsfree" : "optional text, e.g. handsfree"} onChange={(e) => setTracker({ query: e.target.value })} />
               )}
               <span className="hint">{QUERY_HINT[tk.kind]}</span>
+              {tk.kind === "github" && looksLikeJql(tk.query) && (
+                <div className="callout warn" style={{ marginTop: 8 }}>
+                  <span className="t">
+                    This looks like Jira JQL. GitHub ignores it and finds nothing (no error). Use search qualifiers, e.g.{" "}
+                    <span className="mono">assignee:@me label:TO_DO</span>{" "}
+                    <button className="btn sm" onClick={() => setTracker({ query: "assignee:@me" })}>Use assignee:@me</button>
+                  </span>
+                </div>
+              )}
             </div>
             <div className="row" style={{ marginBottom: 14 }}>
               <button className="btn" onClick={testJira} disabled={jira?.loading}>{jira?.loading ? "Running…" : "Test query"}</button>
@@ -526,6 +550,20 @@ function ProjectEditor({
                 ))}
               </div>
             )}
+            <div className="grid3">
+              <div className="field">
+                <label>Pickup label</label>
+                <input className="input code" value={tk.pickupLabel} placeholder={DEFAULT_PICKUP_LABEL} onChange={(e) => setTracker({ pickupLabel: e.target.value })} />
+                <span className="hint">Matches wait in Assigned until they carry this label — add it in the tracker or with Pickup ready on the dashboard. Empty = start everything the query finds.</span>
+              </div>
+              {tk.kind !== "github" && (
+                <div className="field">
+                  <label>Status on pickup</label>
+                  <input className="input code" value={tk.inProgressStatus} placeholder={DEFAULT_IN_PROGRESS_STATUS[tk.kind]} onChange={(e) => setTracker({ inProgressStatus: e.target.value })} />
+                  <span className="hint">The {TRACKER_NOUN[tk.kind]} moves here when work starts · empty = leave it.</span>
+                </div>
+              )}
+            </div>
             <div className="field">
               <label>Status on merge</label>
               <input className="input code" value={tk.doneStatus} placeholder={DEFAULT_DONE_STATUS[tk.kind]} onChange={(e) => setTracker({ doneStatus: e.target.value })} />
@@ -540,7 +578,7 @@ function ProjectEditor({
                   <label>Search command</label>
                   <input className="input code" value={tk.searchCommand} placeholder={tk.kind === "jira" ? DEFAULT_JIRA_SEARCH : DEFAULT_GITHUB_SEARCH} onChange={(e) => setTracker({ searchCommand: e.target.value })} />
                   <span className="hint">
-                    {tk.kind === "jira" ? <><span className="mono">{"{jql}"}</span> is filled in for you. Must print JSON (or any text containing issue keys).</> : <><span className="mono">{"{repo} {query}"}</span> are filled in. Must print <span className="mono">--json number,title,body,url</span> (or lines like <span className="mono">#12 Title</span>).</>}{" "}
+                    {tk.kind === "jira" ? <><span className="mono">{"{jql}"}</span> is filled in for you. Must print JSON (or any text containing issue keys).</> : <><span className="mono">{"{repo} {query}"}</span> are filled in. Must print <span className="mono">--json number,title,body,url,labels</span> (or lines like <span className="mono">#12 Title</span>).</>}{" "}
                     Empty = default.
                   </span>
                 </div>
@@ -724,6 +762,7 @@ function ProjectEditor({
               <dt>Base / remote</dt><dd className="mono">{p.baseBranch} · {p.remote}</dd>
               <dt>Tracker</dt><dd>{TRACKER_LABEL[p.tracker.kind]}{p.tracker.kind === "github" ? ` · ${p.tracker.repo || `repo from ${p.remote}`}` : p.tracker.kind === "linear" ? ` · assignee ${p.tracker.linearAssignee || "anyone"} · status ${p.tracker.linearState || "any"}` : ""}</dd>
               <dt>Query</dt><dd className="mono">{p.tracker.query || <span className="muted">none</span>}</dd>
+              <dt>Pickup</dt><dd>{p.tracker.pickupLabel.trim() ? <>Waits for the <span className="mono">{p.tracker.pickupLabel}</span> label</> : "Starts everything the query finds"}{p.tracker.inProgressStatus.trim() ? ` · moved to “${p.tracker.inProgressStatus}”` : ""}</dd>
               <dt>On merge</dt><dd>{p.tracker.doneStatus.trim() ? (p.tracker.kind === "github" ? "Issue closed as completed" : `Moved to “${p.tracker.doneStatus}”`) : "Ticket status left as is"}</dd>
               <dt>MCP servers</dt><dd>{mcpError ? <span className="err-text">invalid JSON</span> : mcpServers.join(", ") || "none"}</dd>
               <dt>Agent chain</dt>
@@ -757,6 +796,22 @@ function ProjectEditor({
       <div className="footer-bar">
         <button className="btn" disabled={step === 0} onClick={() => setStep(step - 1)}>Back</button>
         <div className="spacer" />
+        {/* Editing an existing project: save from any step, so a one-field change isn't lost on the way to Review. */}
+        {!isNew && step < STEPS.length - 1 && problems.length > 0 && <span className="err-text" style={{ maxWidth: 420, textAlign: "right" }}>Can't save: {problems.join(" · ")}</span>}
+        {!isNew && step < STEPS.length - 1 && (
+          <button
+            className="btn"
+            disabled={problems.length > 0 || saving}
+            title={problems.length ? problems.join(" · ") : "Save without going through the remaining steps"}
+            onClick={async () => {
+              setSaving(true);
+              await onSave(p);
+              setSaving(false);
+            }}
+          >
+            Save changes
+          </button>
+        )}
         {step < STEPS.length - 1 ? (
           <button className="btn primary" onClick={() => setStep(step + 1)}>Continue</button>
         ) : (

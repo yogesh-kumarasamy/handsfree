@@ -34,6 +34,7 @@ sh(`git add -A && git commit -qm init && git remote add origin ${remote} && git 
 // --- fakes
 script("acli", `
 if [ "$1 $2 $3" = "jira workitem search" ]; then
+  if [ -f "${root}/ACLI_UNAUTH" ]; then echo "✗ Error: unauthorized: use 'acli [product] auth login' to authenticate" >&2; exit 1; fi
   echo '[{"key":"DEMO-1","fields":{"summary":"Add greeting","description":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Say hi in README"}]}]}}},{"key":"DEMO-2","fields":{"summary":"Second ticket"}}]'
   exit 0
 fi
@@ -48,9 +49,11 @@ case "$1 $2" in
   "pr ready") echo "$@" >> "${root}/ready.log" ;;
   "run view") echo "$@" >> "${root}/runs.log"; echo "Run $3 ▸ job test"; echo "FAIL tests/greeting.test.js: expected hi, got hello" ;;
   "auth status") echo "Logged in to github.com as tester"; exit 0 ;;
-  "issue list") echo '[{"number":5,"title":"Add farewell","body":"Say bye","url":"https://github.com/acme/repo/issues/5"}]' ;;
+  "issue list") if [ -f "${root}/gh-issues.json" ]; then cat "${root}/gh-issues.json"; else echo '[{"number":5,"title":"Add farewell","body":"Say bye","url":"https://github.com/acme/repo/issues/5"}]'; fi ;;
   "issue comment") echo "$@" >> "${root}/ghcomments.log" ;;
   "issue close") echo "$@" >> "${root}/ghclose.log" ;;
+  "issue edit") if [ -f "${root}/ghlabel" ]; then echo "$@" >> "${root}/ghedit.log"; else echo "could not add label: 'PICKUP_READY' not found" >&2; exit 1; fi ;;
+  "label create") touch "${root}/ghlabel"; echo "$@" >> "${root}/ghlabel.log" ;;
 esac`);
 // stand-in for macOS `open`: keep a copy of the Terminal launcher so the test can read it
 script("fakeopen", `cp "$1" "${root}/opened.command"`);
@@ -90,7 +93,7 @@ const project = {
   repoPath: repo,
   baseBranch: "main",
   remote: "origin",
-  tracker: { kind: "jira", query: "project = DEMO", searchCommand: 'acli jira workitem search --jql {jql} --json', commentCommand: "acli jira workitem comment create --key {issue_key} --body {body}", transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me" },
+  tracker: { kind: "jira", query: "project = DEMO", searchCommand: 'acli jira workitem search --jql {jql} --json', commentCommand: "acli jira workitem comment create --key {issue_key} --body {body}", transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", pickupLabel: "" },
   mcpJson: '{"mcpServers":{"github":{"type":"http","url":"https://example.invalid/mcp"}}}',
   agents: [
     { id: "a1", name: "Grok", command: "fakegrok {prompt}", enabled: true, exhaustionPatterns: ["rate.?limit"] },
@@ -523,6 +526,7 @@ try {
   // The done transition runs after the status flips to merged.
   await waitFor(async () => (await ticket("DEMO-1")).trackerDone === true, "DEMO-1 trackerDone");
   assert.match(fs.readFileSync(path.join(root, "transitions.log"), "utf8"), /--key DEMO-1 --status Done --yes/, "Jira ticket moved to Done on merge");
+  assert.match(fs.readFileSync(path.join(root, "transitions.log"), "utf8"), /--key DEMO-1 --status In Progress --yes/, "Jira ticket moved to In Progress on pickup");
   assert.match((await api("/api/tickets/DEMO-1/log")).log, /✓ Moved the Jira ticket to “Done”/);
 
   // failing chain → failed, then retry
@@ -611,11 +615,38 @@ try {
   assert.match(sh(`git log --oneline main..handsfree/DEMO-2`, remote), /DEMO-2/, "your change was committed and pushed");
   assert.equal(sh(`git rev-list --count main..handsfree/DEMO-2`, remote), "1", "fresh pick-up started from main, not from the old pushed branch");
 
-  // ---- A GitHub Issues project on the same repo: pick-up, PR, comment via gh, close on merge
+  // ---- Expired tracker login: the poll records the error; once fixed, Retry (one project's query, now) clears it
+  fs.writeFileSync(path.join(root, "ACLI_UNAUTH"), "");
+  await api("/api/poll-now", "POST");
+  await waitFor(async () => /unauthorized/.test((await api("/api/state")).pollErrors?.p1 || ""), "p1 poll error recorded");
+  const failedRetry = await api("/api/projects/p1/poll", "POST", {});
+  assert.equal(failedRetry.ok, false, "still logged out: retry reports the error");
+  assert.match(failedRetry.error, /unauthorized/);
+  fs.unlinkSync(path.join(root, "ACLI_UNAUTH"));
+  const retry = await api("/api/projects/p1/poll", "POST", {});
+  assert.equal(retry.ok, true, "after login the retry works");
+  assert.equal(retry.found, 2);
+  const afterRetry = await api("/api/state");
+  assert.equal(afterRetry.pollErrors.p1, undefined, "the error is gone without waiting for the next poll");
+  assert.equal(afterRetry.pollCheckedAt.p1, retry.checkedAt);
+  assert.equal((await api("/api/projects/nope/poll", "POST", {})).error, "No such project.");
+
+  // ---- A GitHub Issues project on the same repo (default pickup label): waits in Assigned, Pickup ready labels it, then PR, comment via gh, close on merge
   const fakeClaudeOnly = [{ id: "c1", name: "Claude Code", command: "fakeclaude -p {prompt_file} --mcp-config {mcp_file}", enabled: true, exhaustionPatterns: ["rate.?limit"] }];
   const ghProject = { ...project, id: "p2", name: "GH", messaging: undefined, tracker: { kind: "github", query: "label:hf", searchCommand: "", commentCommand: "", transitionCommand: "", doneStatus: "closed", repo: "acme/repo", linearAssignee: "" }, agents: fakeClaudeOnly };
   await api("/api/config", "PUT", { ...(await api("/api/config")), projects: [project, ghProject] });
+  assert.equal((await api("/api/config")).projects[1].tracker.pickupLabel, "PICKUP_READY", "pickup label defaults on");
   await api("/api/poll-now", "POST");
+  const waitingT = await waitFor(async () => (await ticket("repo#5"))?.status === "awaiting_pickup" && (await ticket("repo#5")), "repo#5 awaiting pickup");
+  await sleep(1500);
+  assert.equal((await ticket("repo#5")).status, "awaiting_pickup", "no agent starts without the label");
+  assert.equal(waitingT.attempts.length, 0);
+  assert.match((await api(`/api/tickets/${encodeURIComponent("repo#5")}/log`)).log, /waiting for the “PICKUP_READY” label/);
+  await api(`/api/tickets/${encodeURIComponent("repo#5")}/pickup-ready`, "POST", {});
+  assert.match(fs.readFileSync(path.join(root, "ghlabel.log"), "utf8"), /label create PICKUP_READY --repo acme\/repo/, "missing repo label created once");
+  assert.match(fs.readFileSync(path.join(root, "ghedit.log"), "utf8"), /issue edit 5 --repo acme\/repo --add-label PICKUP_READY/);
+  assert.notEqual((await ticket("repo#5")).status, "awaiting_pickup");
+  assert.ok(!fs.existsSync(path.join(root, "ghclose.log")), "pickup never closes the GitHub issue");
   const ghT = await waitFor(async () => {
     const t = await ticket("repo#5");
     return t?.status === "pr_draft" && t.jiraCommented && t;
@@ -634,9 +665,32 @@ try {
   assert.equal((await ticket("repo#5")).status, "merged");
   assert.match(fs.readFileSync(path.join(root, "ghclose.log"), "utf8"), /issue close 5 --repo acme\/repo --reason completed/);
   assert.match((await api(`/api/tickets/${encodeURIComponent("repo#5")}/log`)).log, /Moved the GitHub issue to “closed”/);
+  assert.match((await api(`/api/tickets/${encodeURIComponent("repo#5")}/log`)).log, /Picked up: marked pickup ready from the dashboard/);
+
+  // ---- Removing the pickup label sends a ticket without a PR (here: failed) back to Assigned; one with a PR stays put
+  const issue7 = (labels) => JSON.stringify([
+    { number: 5, title: "Add farewell", body: "Say bye", url: "https://github.com/acme/repo/issues/5" },
+    { number: 7, title: "Flaky thing", body: "", url: "https://github.com/acme/repo/issues/7", labels: labels.map((name) => ({ name })) },
+  ]);
+  fs.writeFileSync(path.join(root, "gh-issues.json"), issue7(["PICKUP_READY"]));
+  const failingGh = { ...ghProject, agents: [{ id: "f1", name: "Broken", command: "false", enabled: true, exhaustionPatterns: [] }] };
+  await api("/api/config", "PUT", { ...(await api("/api/config")), projects: [project, failingGh] });
+  await api("/api/poll-now", "POST");
+  await waitFor(async () => (await ticket("repo#7"))?.status === "failed", "repo#7 picked up (label present) and failed");
+  fs.writeFileSync(path.join(root, "gh-issues.json"), issue7([]));
+  await api("/api/projects/p2/poll", "POST", {});
+  const back = await ticket("repo#7");
+  assert.equal(back.status, "awaiting_pickup", "label removed → back to Assigned");
+  assert.equal(back.error, undefined);
+  assert.deepEqual(back.labels, undefined);
+  assert.match((await api(`/api/tickets/${encodeURIComponent("repo#7")}/log`)).log, /Back to Assigned: the “PICKUP_READY” label was removed/);
+  assert.equal((await ticket("repo#5")).status, "merged", "a ticket with a PR is never sent back");
+  await api(`/api/tickets/${encodeURIComponent("repo#7")}/forget`, "POST");
+  fs.unlinkSync(path.join(root, "gh-issues.json"));
+  await api("/api/config", "PUT", { ...(await api("/api/config")), projects: [project, ghProject] });
 
   // ---- A Linear project: not logged in → poll error; log in (dynamic registration); pick-up, comment, update_issue on merge
-  const linProject = { ...ghProject, id: "p3", name: "Lin", tracker: { kind: "linear", query: "", searchCommand: "", commentCommand: "", transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo" } };
+  const linProject = { ...ghProject, id: "p3", name: "Lin", tracker: { kind: "linear", query: "", searchCommand: "", commentCommand: "", transitionCommand: "", doneStatus: "Done", repo: "", linearAssignee: "me", linearState: "Todo", pickupLabel: "", inProgressStatus: "" } };
   const cfgL = await api("/api/config");
   await api("/api/config", "PUT", { ...cfgL, settings: { ...cfgL.settings, accounts: { ...cfgL.settings.accounts, linear: { mcpUrl: linMcp.url, issuer: linAuth.issuer, redirectPort: cbPort + 1, scopes: "read write" } } }, projects: [project, ghProject, linProject] });
   assert.equal((await api("/api/accounts/linear")).loggedIn, false);

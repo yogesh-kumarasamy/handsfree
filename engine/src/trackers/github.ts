@@ -1,7 +1,7 @@
 // GitHub Issues through the GitHub CLI (`gh`), using the login already on the Mac.
 import { issueTypeOf, labelNames } from "../naming";
 import { fill } from "../shell";
-import { DEFAULT_GITHUB_CLOSE, DEFAULT_GITHUB_COMMENT, DEFAULT_GITHUB_SEARCH, TRACKER_NOUN, type FoundIssue } from "../types";
+import { DEFAULT_GITHUB_CLOSE, DEFAULT_GITHUB_COMMENT, DEFAULT_GITHUB_LABEL, DEFAULT_GITHUB_SEARCH, GITHUB_CREATE_LABEL, TRACKER_NOUN, type FoundIssue } from "../types";
 import { defaultRun, failure, type Run, type TicketRef, type TrackerAdapter, type TrackerProject } from "./adapter";
 
 /** owner/name of a github.com remote (ssh, scp-like or https), else undefined. */
@@ -29,7 +29,10 @@ export function parseGithubIssues(output: string, repoName: string): FoundIssue[
       if (i.body?.trim()) issue.description = i.body;
       if (i.url) issue.url = i.url;
       const labels = labelNames(i.labels);
-      if (labels.length) issue.type = issueTypeOf(labels);
+      if (labels.length) {
+        issue.type = issueTypeOf(labels);
+        issue.labels = labels;
+      }
       out.push(issue);
     }
     return out;
@@ -113,6 +116,20 @@ export class GithubTracker implements TrackerAdapter {
     if (!status.trim()) return { skipped: true };
     const repo = await this.repo();
     await this.gh(fill(this.p.tracker.transitionCommand.trim() || DEFAULT_GITHUB_CLOSE, { number: this.number(t), repo, status, issue_key: t.key }), "close");
+    return { skipped: false };
+  }
+
+  async addLabel(t: TicketRef, label: string) {
+    const repo = await this.repo();
+    const cmd = fill(DEFAULT_GITHUB_LABEL, { number: this.number(t), repo, label, issue_key: t.key });
+    try {
+      await this.gh(cmd, "label");
+    } catch (e) {
+      // gh refuses labels the repo doesn't have yet: create it once, then label again.
+      if (!/not found/i.test((e as Error).message)) throw e;
+      await this.gh(fill(GITHUB_CREATE_LABEL, { label, repo, description: "HandsFree may start work on this issue" }), "label");
+      await this.gh(cmd, "label");
+    }
     return { skipped: false };
   }
 }

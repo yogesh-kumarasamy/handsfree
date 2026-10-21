@@ -22,6 +22,8 @@ export interface Api {
   pause(): Promise<void>;
   resume(): Promise<void>;
   pollNow(): Promise<void>;
+  /** Run one project's tracker query now; clears its poll error when it works. */
+  pollProject(id: string): Promise<{ ok: boolean; error?: string; found?: number; checkedAt: string }>;
   retry(key: string): Promise<void>;
   stop(key: string): Promise<void>;
   cleanup(key: string): Promise<void>;
@@ -38,6 +40,8 @@ export interface Api {
   publish(key: string): Promise<void>;
   /** Run a CI fix round now (ignores the auto-fix setting and the round cap). */
   fixCi(key: string): Promise<void>;
+  /** Add the project's pickup label on the tracker and start work on a waiting ticket. */
+  pickupReady(key: string): Promise<void>;
   checkPrsNow(): Promise<void>;
   /** Send one ticket's collab message (template-filled unless `text` is given). */
   sendMessage(key: string, text?: string): Promise<MessageRecord>;
@@ -110,6 +114,7 @@ function createHttpApi(base: string, token: string): Api {
     pause: () => call("/api/pause", "POST"),
     resume: () => call("/api/resume", "POST"),
     pollNow: () => call("/api/poll-now", "POST"),
+    pollProject: (id) => action(`/api/projects/${encodeURIComponent(id)}/poll`, {}),
     retry: (k) => call(`/api/tickets/${encodeURIComponent(k)}/retry`, "POST"),
     stop: (k) => call(`/api/tickets/${encodeURIComponent(k)}/stop`, "POST"),
     cleanup: (k) => call(`/api/tickets/${encodeURIComponent(k)}/cleanup`, "POST"),
@@ -119,6 +124,7 @@ function createHttpApi(base: string, token: string): Api {
     handBack: (k, mode) => action(`/api/tickets/${encodeURIComponent(k)}/handback`, { mode }),
     publish: (k) => action(`/api/tickets/${encodeURIComponent(k)}/publish`, {}),
     fixCi: (k) => action(`/api/tickets/${encodeURIComponent(k)}/fix-ci`, {}),
+    pickupReady: (k) => action(`/api/tickets/${encodeURIComponent(k)}/pickup-ready`, {}),
     checkPrsNow: () => call("/api/check-prs-now", "POST"),
     sendMessage: (k, text) => action(`/api/tickets/${encodeURIComponent(k)}/message`, { text }),
     feedback: (k, text) => action(`/api/tickets/${encodeURIComponent(k)}/feedback`, { text }),
