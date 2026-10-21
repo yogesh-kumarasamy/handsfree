@@ -127,3 +127,12 @@ test("saved Setmore scopes without the server's required scope get it appended; 
   assert.equal(s.accounts.setmore.clientId, "cid");
   assert.match(normalizeSettings(undefined).accounts.setmore.scopes, /\bsetmore\.apis-internal\.fullaccess\b/);
 });
+
+test("normalizeProject keeps the draft flag and never enables a draft", () => {
+  const d = normalizeProject({ name: "P", draft: true, enabled: true });
+  assert.equal(d.draft, true);
+  assert.equal(d.enabled, false);
+  const live = normalizeProject({ name: "P", draft: false, enabled: true });
+  assert.equal("draft" in live, false);
+  assert.equal(live.enabled, true);
+});

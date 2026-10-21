@@ -129,7 +129,9 @@ export function normalizeProject(p: Partial<ProjectConfig> & LegacyJiraFields): 
   return {
     id: p.id || cryptoId(),
     name: p.name || "Untitled",
-    enabled: p.enabled ?? true,
+    // A draft never polls or picks up tickets, whatever `enabled` says.
+    enabled: p.draft ? false : p.enabled ?? true,
+    ...(p.draft ? { draft: true } : {}),
     repoPath: p.repoPath || "",
     baseBranch: p.baseBranch || "main",
     remote: p.remote || "origin",

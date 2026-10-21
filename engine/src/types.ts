@@ -24,6 +24,8 @@ export interface ProjectConfig {
   id: string;
   name: string;
   enabled: boolean;
+  /** Still being set up in the editor: saved as you go but never enabled until activated. */
+  draft?: boolean;
   /** Absolute path to the git repo. */
   repoPath: string;
   baseBranch: string;
