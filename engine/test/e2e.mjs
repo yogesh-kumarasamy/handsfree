@@ -726,6 +726,12 @@ try {
   assert.match(rejected.error, /handsfree\/DEMO-2.*doesn't match/);
   assert.doesNotMatch((await api("/api/tickets/DEMO-2/log")).log, /▶ Agent/, "no agent ran");
 
+  // A draft saved by the editor's autosave stays off, even if a stale client sends enabled: true
+  await api("/api/config", "PUT", { ...(await api("/api/config")), projects: [project, { ...project, id: "draft1", name: "Half set up", draft: true, enabled: true }] });
+  const draftCfg = (await api("/api/config")).projects.find((p) => p.id === "draft1");
+  assert.equal(draftCfg.draft, true);
+  assert.equal(draftCfg.enabled, false, "a draft never polls");
+
   const doc = await api("/api/doctor");
   assert.ok(doc.find((d) => d.name === "gh").ok);
 

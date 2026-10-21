@@ -289,3 +289,4 @@ a.link:hover { text-decoration: underline; }
 .routine-card { margin-bottom: 12px; }
 .routine-card.disabled { opacity: 0.6; }
 .routine-status { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; }
+.footer-bar .save-status { font-size: 12px; max-width: 420px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

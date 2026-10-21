@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AGENT_PRESETS,
   DEFAULT_AGENT_MESSAGE_COMMAND,
@@ -30,24 +30,9 @@ import {
 import { ANYWHERE_NAMING, checkName, DEFAULT_NAMING, type NamingConfig, type NamingRule } from "../../engine/src/naming";
 import { describeCron, parseCron } from "../../engine/src/routines/cron";
 import { pickFolder, type Api, type RepoInfo } from "../api";
-import { ago, Icon, Toggle, until } from "../ui";
-
-/** A ticket to preview the naming templates with; the key shape matches what trackers hand out. */
-const NAMING_SAMPLE = { key: "ABC-123", summary: "Add greeting to the README", type: "bug" };
-const NAMING_ROWS: { k: keyof NamingConfig; label: string; hint: string }[] = [
-  { k: "branch", label: "Branch", hint: "Created at pick-up. {type} comes from the ticket's issue type or labels (bug, feature, spike, improvement…)." },
-  { k: "commit", label: "Commit subject", hint: "Used for HandsFree's own commits and told to the agent. Agent commits that don't match the pattern are reworded to the template before the push." },
-  { k: "prTitle", label: "PR title", hint: "Checked before the PR is opened." },
-];
-
-/** The first naming rule whose template can't satisfy its own pattern (or whose regex is invalid), as a sentence; "" when all is well. */
-function namingProblem(naming: NamingConfig): string {
-  for (const row of NAMING_ROWS) {
-    const r = checkName(naming[row.k], NAMING_SAMPLE);
-    if (!r.ok) return `${row.label} naming: ${r.error}`;
-  }
-  return "";
-}
+import { ProjectAutosaver, type AutosaveStatus } from "../autosave";
+import { firstProblemStep, mcpJsonError, NAMING_ROWS, NAMING_SAMPLE, projectProblems, REVIEW, ROUTINES, STEPS } from "../projectcheck";
+import { ago, Icon, Toggle, until, useTick } from "../ui";
 
 function NamingCard({ naming, onChange }: { naming: NamingConfig; onChange: (n: NamingConfig) => void }) {
   const setRule = (k: keyof NamingConfig, patch: Partial<NamingRule>) => onChange({ ...naming, [k]: { ...naming[k], ...patch } });
@@ -91,7 +76,9 @@ function blankProject(): ProjectConfig {
   return {
     id: uid(),
     name: "",
-    enabled: true,
+    // A new project is a draft until activated on the last step.
+    enabled: false,
+    draft: true,
     repoPath: "",
     baseBranch: "main",
     remote: "origin",
@@ -137,6 +124,17 @@ export function Projects({
   const save = async (projects: ProjectConfig[]) => {
     await api.saveConfig({ ...config, projects });
   };
+  // Re-read the config so a delete never writes back a stale copy (the editor autosaves through it too).
+  const remove = async (id: string) => {
+    const c = await api.getConfig();
+    await api.saveConfig({ ...c, projects: c.projects.filter((x) => x.id !== id) });
+  };
+  // "Continue setup" opens a draft on its first unfinished step.
+  const [startStep, setStartStep] = useState<number>();
+  const open = (id: string, step?: number) => {
+    setStartStep(step);
+    setEditing(id);
+  };
 
   if (editing) {
     const existing = config.projects.find((p) => p.id === editing);
@@ -145,23 +143,13 @@ export function Projects({
         api={api}
         initial={existing || blankProject()}
         isNew={!existing}
-        initialStep={initialStep}
+        initialStep={startStep ?? initialStep}
         state={state}
-        onCancel={() => setEditing(null)}
-        onSave={async (p) => {
-          const exists = config.projects.some((x) => x.id === p.id);
-          await save(exists ? config.projects.map((x) => (x.id === p.id ? p : x)) : [...config.projects, p]);
+        onClose={() => setEditing(null)}
+        onDelete={async (id) => {
+          await remove(id);
           setEditing(null);
         }}
-        onDelete={
-          existing
-            ? async () => {
-                if (!confirm(`Delete project “${existing.name}”? Running tickets keep going; worktrees stay on disk.`)) return;
-                await save(config.projects.filter((x) => x.id !== existing.id));
-                setEditing(null);
-              }
-            : undefined
-        }
       />
     );
   }
@@ -171,15 +159,15 @@ export function Projects({
       <div className="page-head">
         <div>
           <h1 className="page-title">Projects</h1>
-          <div className="page-sub">Each project is a repo + a tracker query + MCP servers + an agent chain. Saved projects go live immediately.</div>
+          <div className="page-sub">Each project is a repo + a tracker query + MCP servers + an agent chain. Edits save as you go; a new project starts working once you activate it.</div>
         </div>
-        <button className="btn primary" onClick={() => setEditing("new")}>{Icon.plus} New project</button>
+        <button className="btn primary" onClick={() => open("new")}>{Icon.plus} New project</button>
       </div>
 
       {config.projects.length === 0 ? (
         <div className="card empty">
           <p>No projects yet.</p>
-          <button className="btn primary" onClick={() => setEditing("new")}>{Icon.plus} Create your first project</button>
+          <button className="btn primary" onClick={() => open("new")}>{Icon.plus} Create your first project</button>
         </div>
       ) : (
         <div className="project-list">
@@ -196,7 +184,7 @@ export function Projects({
                 <div>
                   <div className="project-name">
                     {p.name}
-                    {!p.enabled && <span className="badge stopped">Off</span>}
+                    {p.draft ? <span className="badge queued">Draft</span> : !p.enabled && <span className="badge stopped">Off</span>}
                   </div>
                   <div className="project-meta" style={{ marginTop: 6 }}>
                     <span className="mono">{p.repoPath.replace(/^\/Users\/[^/]+/, "~")}</span>
@@ -205,10 +193,24 @@ export function Projects({
                     <span>{p.draftPr ? "Draft PRs" : "Ready PRs"}</span>
                   </div>
                 </div>
-                <div className="row">
-                  <Toggle on={p.enabled} title={p.enabled ? "Pause this project" : "Activate this project"} onChange={(v) => save(config.projects.map((x) => (x.id === p.id ? { ...x, enabled: v } : x)))} />
-                  <button className="btn sm" onClick={() => setEditing(p.id)}>Edit</button>
-                </div>
+                {p.draft ? (
+                  <div className="row">
+                    <button
+                      className="btn sm ghost danger"
+                      onClick={() => {
+                        if (confirm(`Delete the draft “${p.name}”?`)) void remove(p.id);
+                      }}
+                    >
+                      Delete
+                    </button>
+                    <button className="btn sm primary" onClick={() => open(p.id, firstProblemStep(p))}>Continue setup</button>
+                  </div>
+                ) : (
+                  <div className="row">
+                    <Toggle on={p.enabled} title={p.enabled ? "Pause this project" : "Activate this project"} onChange={(v) => save(config.projects.map((x) => (x.id === p.id ? { ...x, enabled: v } : x)))} />
+                    <button className="btn sm" onClick={() => open(p.id)}>Edit</button>
+                  </div>
+                )}
                 <div className="jql" title={p.tracker.query}>{TRACKER_LABEL[p.tracker.kind]}{p.tracker.query ? ` · ${p.tracker.query}` : ""}</div>
                 <div className="chain" style={{ gridColumn: "1 / -1" }}>
                   {chain.length === 0 && <span className="err-text">No enabled agents</span>}
@@ -228,11 +230,6 @@ export function Projects({
   );
 }
 
-const STEPS = ["Repository", "Tracker", "MCP servers", "Agent chain", "Messaging", "Routines", "Review"];
-const ROUTINES = STEPS.indexOf("Routines");
-/** Always the last step: computed so steps added before it don't shift a literal. */
-const REVIEW = STEPS.length - 1;
-
 const TRACKER_LABEL: Record<TrackerKind, string> = { jira: "Jira", github: "GitHub Issues", linear: "Linear" };
 const TRACKER_INTRO: Record<TrackerKind, string> = {
   jira: "Which tickets to pick up. HandsFree runs this through your Jira CLI (acli), using the login already on your Mac — no tokens stored here. It comments the PR link and, on merge, moves the ticket to the status below.",
@@ -251,8 +248,7 @@ function ProjectEditor({
   initial,
   isNew,
   initialStep,
-  onCancel,
-  onSave,
+  onClose,
   onDelete,
   state,
 }: {
@@ -261,18 +257,37 @@ function ProjectEditor({
   isNew: boolean;
   initialStep?: number;
   state?: EngineState;
-  onCancel: () => void;
-  onSave: (p: ProjectConfig) => Promise<void>;
-  onDelete?: () => void;
+  onClose: () => void;
+  onDelete: (id: string) => Promise<void>;
 }) {
+  // Props change once the first autosave lands in config; the editor keeps what it was opened with.
+  const [original] = useState(initial);
+  const [wasNew] = useState(isNew);
   const [p, setP] = useState<ProjectConfig>(initial);
   const [step, setStep] = useState(initialStep ?? 0);
   const [repo, setRepo] = useState<RepoInfo>();
   const [jira, setJira] = useState<{ issues?: FoundIssue[]; error?: string; raw?: string; loading?: boolean }>();
-  const [saving, setSaving] = useState(false);
+  const [activating, setActivating] = useState(false);
   const [channels, setChannels] = useState<{ list?: { id: string; name: string }[]; error?: string; loading?: boolean }>();
   const [channelQuery, setChannelQuery] = useState("");
   const [testMsg, setTestMsg] = useState<{ ok: boolean; text: string }>();
+  // Routine ids in the saved config (only those can Run now); follows every autosave.
+  const [savedRoutines, setSavedRoutines] = useState<string[]>(isNew ? [] : initial.routines.map((r) => r.id));
+  // The project is in config once its first save lands (always, unless it was opened as new).
+  const [stored, setStored] = useState(!isNew);
+  const [status, setStatus] = useState<AutosaveStatus>({ kind: "idle" });
+  const saver = useRef<ProjectAutosaver>();
+  if (!saver.current) {
+    saver.current = new ProjectAutosaver(api, {
+      saved: isNew ? undefined : initial,
+      onStatus: setStatus,
+      onSaved: (x) => {
+        setSavedRoutines(x.routines.map((r) => r.id));
+        setStored(true);
+      },
+    });
+  }
+  useTick(10_000);
   const set = (patch: Partial<ProjectConfig>) => setP((x) => ({ ...x, ...patch }));
   const setTracker = (patch: Partial<TrackerConfig>) => setP((x) => ({ ...x, tracker: { ...x.tracker, ...patch } }));
   const tk = p.tracker;
@@ -294,6 +309,8 @@ function ProjectEditor({
         tracker: { ...x.tracker, query: 'project = CSW AND assignee = currentUser() AND status = "To Do" ORDER BY priority DESC' },
         mcpJson: JSON.stringify({ mcpServers: { github: { type: "http", url: "https://api.githubcopilot.com/mcp/" } } }, null, 2),
       }));
+      // The draft starts saving once the folder is known to be a repo.
+      void api.repoInfo("/Users/yogesh/code/chatsupport-web").then(setRepo);
     }
     if (window.__HF_DEMO__?.jiraTested) void testJira();
     if (window.__HF_DEMO__ && isNew && (initialStep ?? 0) === 0) void choose(true);
@@ -327,29 +344,62 @@ function ProjectEditor({
     }
   };
 
-  let mcpError: string | undefined;
+  const mcpError = mcpJsonError(p.mcpJson);
   let mcpServers: string[] = [];
-  try {
-    const parsed = JSON.parse(p.mcpJson || "{}");
-    if (typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Must be a JSON object");
-    mcpServers = Object.keys(parsed.mcpServers || {});
-  } catch (e) {
-    mcpError = (e as Error).message;
-  }
+  if (!mcpError) mcpServers = Object.keys(JSON.parse(p.mcpJson || "{}").mcpServers || {});
 
   const enabledAgents = p.agents.filter((a) => a.enabled && a.command.trim());
-  const problems = [
-    !p.name.trim() && "Give the project a name",
-    !p.repoPath && "Choose a repository",
-    repo && !repo.ok && "The folder isn't a git repository",
-    p.tracker.kind !== "linear" && !p.tracker.query.trim() && (p.tracker.kind === "jira" ? "Add a JQL" : "Add a tracker query"),
-    p.tracker.kind === "linear" && !p.tracker.query.trim() && !p.tracker.linearState.trim() && "Set a Linear status or a text filter",
-    mcpError && "MCP JSON is invalid",
-    namingProblem(p.naming),
-    enabledAgents.length === 0 && "Enable at least one agent with a command",
-    p.messaging.platform !== "none" && !p.messaging.channelId && "Pick a collab channel (Messaging step)",
-    p.routines.some((r) => parseCron(r.schedule) instanceof Error) && "Fix the routine schedule(s)",
-  ].filter(Boolean) as string[];
+  const stepProblems = projectProblems(p, repo ? repo.ok : undefined);
+  const problems = stepProblems.map((x) => x.text);
+  const draft = !!p.draft;
+  // A new draft is first saved once a real repo folder is chosen; from then on it saves problems or not (it never runs).
+  // A live project saves only when it is valid.
+  const blockers = !p.repoPath || (!stored && !repo?.ok) ? ["choose the repository folder"] : draft ? [] : problems;
+  const blockKey = blockers.join("\n");
+  useEffect(() => {
+    saver.current!.edit(p, blockers);
+  }, [p, blockKey]);
+  // Leaving the editor (Done, sidebar, closing the window) saves what's pending.
+  useEffect(() => {
+    const flush = () => void saver.current!.flush();
+    window.addEventListener("beforeunload", flush);
+    return () => {
+      window.removeEventListener("beforeunload", flush);
+      flush();
+    };
+  }, []);
+  const goTo = (i: number) => {
+    setStep(i);
+    void saver.current!.flush();
+  };
+  const changed = JSON.stringify(p) !== JSON.stringify(original);
+  // Only the folder (and what was read from it) differs from a blank project: nothing worth keeping yet.
+  const folderOnly =
+    wasNew && JSON.stringify({ ...p, repoPath: "", name: "", baseBranch: "", remote: "" }) === JSON.stringify({ ...original, repoPath: "", name: "", baseBranch: "", remote: "" });
+  const close = async () => {
+    if (wasNew && stored && folderOnly && confirm("Discard this draft?")) return remove();
+    onClose();
+  };
+  const remove = async () => {
+    await saver.current!.close();
+    await onDelete(p.id);
+  };
+  const revert = () => {
+    if (!confirm("Revert to the version you opened? Your edits since then are dropped.")) return;
+    setP(original);
+  };
+  const activate = async () => {
+    setActivating(true);
+    const { draft: _, ...rest } = p;
+    const next = { ...rest, enabled: true };
+    setP(next);
+    saver.current!.edit(next, []);
+    const ok = await saver.current!.flush();
+    setActivating(false);
+    // Still a draft when the save failed; the footer says why.
+    if (ok) onClose();
+    else setP(p);
+  };
 
   const setAgent = (id: string, patch: Partial<AgentConfig>) => set({ agents: p.agents.map((a) => (a.id === id ? { ...a, ...patch } : a)) });
   const setMsg = (patch: Partial<MessagingConfig>) => set({ messaging: { ...p.messaging, ...patch } });
@@ -376,19 +426,37 @@ function ProjectEditor({
     <div className="page" style={{ maxWidth: 900 }}>
       <div className="page-head">
         <div>
-          <h1 className="page-title">{isNew ? "New project" : p.name}</h1>
-          <div className="page-sub">{isNew ? "A few quick steps. It starts picking up tickets as soon as you save." : "Changes apply from the next ticket."}</div>
+          <h1 className="page-title">{wasNew ? "New project" : p.name}</h1>
+          <div className="page-sub">
+            {draft
+              ? "A few quick steps, saved as a draft as you go. It starts picking up tickets once you activate it."
+              : "Saved as you go. Changes apply from the next ticket."}
+          </div>
         </div>
         <div className="row">
-          {onDelete && <button className="btn ghost danger" onClick={onDelete}>Delete</button>}
-          <button className="btn" onClick={onCancel}>Cancel</button>
+          {stored && (
+            <button
+              className="btn ghost danger"
+              onClick={() => {
+                if (confirm(draft ? `Delete the draft “${p.name}”?` : `Delete project “${p.name}”? Running tickets keep going; worktrees stay on disk.`)) void remove();
+              }}
+            >
+              Delete
+            </button>
+          )}
+          <button className="btn" onClick={close}>{!stored || folderOnly ? "Cancel" : "Done"}</button>
         </div>
       </div>
 
       <div className="steps">
         {STEPS.map((s, i) => (
-          <button key={s} className={`step ${i === step ? "active" : ""} ${i < step ? "done" : ""}`} onClick={() => setStep(i)}>
-            <span className="step-num">{i < step ? "✓" : i + 1}</span>
+          <button
+            key={s}
+            className={`step ${i === step ? "active" : ""} ${i < step ? "done" : ""}`}
+            title={stepProblems.filter((x) => x.step === i).map((x) => x.text).join(" · ") || undefined}
+            onClick={() => goTo(i)}
+          >
+            <span className="step-num">{stepProblems.some((x) => x.step === i) && (!draft || i < step) ? "!" : i < step ? "✓" : i + 1}</span>
             {s}
           </button>
         ))}
@@ -712,12 +780,12 @@ function ProjectEditor({
           </>
         )}
 
-        {step === ROUTINES && <RoutinesStep api={api} p={p} set={set} state={state} saved={isNew ? [] : initial.routines.map((r) => r.id)} />}
+        {step === ROUTINES && <RoutinesStep api={api} p={p} set={set} state={state} saved={savedRoutines} />}
 
         {step === REVIEW && (
           <>
             <h3 className="card-title">Review</h3>
-            <p className="card-sub">Once saved, HandsFree runs this tracker query on the next poll and starts working.</p>
+            <p className="card-sub">{draft ? "Once activated, HandsFree runs this tracker query on the next poll and starts working." : "HandsFree runs this tracker query on the next poll."}</p>
             <dl className="review-grid">
               <dt>Name</dt><dd>{p.name || <span className="err-text">missing</span>}</dd>
               <dt>Repository</dt><dd className="mono">{p.repoPath || <span className="err-text">missing</span>}</dd>
@@ -752,29 +820,50 @@ function ProjectEditor({
             )}
           </>
         )}
+        {step !== REVIEW && stepProblems.some((x) => x.step === step) && (
+          <div className="callout warn" style={{ marginTop: 16 }}>
+            <span className="t">
+              {draft ? "To finish this step: " : "Not saved until fixed: "}
+              {stepProblems.filter((x) => x.step === step).map((x) => x.text).join(" · ")}
+            </span>
+          </div>
+        )}
       </div>
 
       <div className="footer-bar">
-        <button className="btn" disabled={step === 0} onClick={() => setStep(step - 1)}>Back</button>
+        <button className="btn" disabled={step === 0} onClick={() => goTo(step - 1)}>Back</button>
+        <SaveStatus status={status} />
         <div className="spacer" />
-        {step < STEPS.length - 1 ? (
-          <button className="btn primary" onClick={() => setStep(step + 1)}>Continue</button>
-        ) : (
-          <button
-            className="btn primary"
-            disabled={problems.length > 0 || saving}
-            onClick={async () => {
-              setSaving(true);
-              await onSave(p);
-              setSaving(false);
-            }}
-          >
-            {isNew ? "Save & activate" : "Save changes"}
+        {!draft && !wasNew && changed && <button className="btn ghost" onClick={revert}>Revert changes</button>}
+        {step < REVIEW ? (
+          <button className="btn primary" onClick={() => goTo(step + 1)}>Continue</button>
+        ) : draft ? (
+          <button className="btn primary" disabled={problems.length > 0 || activating} title={problems.join(" · ") || undefined} onClick={activate}>
+            {activating ? "Activating…" : "Activate"}
           </button>
+        ) : (
+          <button className="btn primary" onClick={close}>Done</button>
         )}
       </div>
     </div>
   );
+}
+
+/** The footer's autosave line: Saving… / Saved just now / Not saved: <reason>. */
+function SaveStatus({ status }: { status: AutosaveStatus }) {
+  switch (status.kind) {
+    case "idle":
+      return null;
+    case "waiting":
+    case "saving":
+      return <span className="hint save-status">Saving…</span>;
+    case "saved":
+      return <span className="hint save-status">✓ Saved {ago(new Date(status.at).toISOString())}</span>;
+    case "blocked":
+      return <span className="err-text save-status" title={status.reasons.join(" · ")}>Not saved: {status.reasons.join(" · ")}</span>;
+    case "error":
+      return <span className="err-text save-status" title={status.error}>Not saved: {status.error.slice(0, 120)} — retries on your next edit</span>;
+  }
 }
 
 function cronText(schedule: string) {
