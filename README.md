@@ -31,10 +31,8 @@ node -v                                                  # Node 20+ (the engine 
 gh auth login                                            # PRs
 acli jira auth login                                     # only for Jira projects: search, comments, done transition
 claude --version; grok --version                         # your agents, logged in
-# Setmore collab messages need an OAuth client id for HandsFree (public client, PKCE,
-# redirect http://127.0.0.1:47831/oauth/callback) — ask the auth team, paste it in Settings → Accounts.
-# The client must be allowed the scopes HandsFree requests, above all setmore.apis-internal.fullaccess
-# (the MCP server refuses every tool call without it) and awapis.chat.streams.push (send_message).
+# Setmore collab messages are sent by Claude: sign in to Claude Code's Setmore connector
+# (claude.ai → Settings → Connectors, or /mcp in Claude Code). HandsFree keeps no Setmore login of its own.
 # Linear projects: Settings → Accounts → Linear → Log in (HandsFree registers itself with Linear; no client id).
 ```
 
@@ -63,7 +61,7 @@ Other commands: `npm run test:engine` (engine e2e test), `npm run engine` (engin
 4. **Agent chain.** Up to 4, top to bottom. The next agent takes over in the same worktree when one exits non-zero, matches a token-exhaustion pattern in its last output, times out, or finishes without changes.
 5. **Save & activate.** It starts on the next check (Settings → *Check tickets every*), or press **Check tickets now**.
 6. **After the PR.** The dashboard groups tickets into *In progress*, *Pull requests*, *Approved, not merged* and *Merged*. **Publish** marks a draft ready (`gh pr ready`); publishing in the GitHub UI is picked up on the next check (Settings → *Check PRs every*, default 3 min). When CI fails, HandsFree fetches the failing step logs (`gh run view --log-failed`) and runs the agent chain again in the same worktree, up to the project's *Max automatic fix rounds*; **Fix CI** starts a round by hand. Approved PRs that wait longer than the project's limit raise a nudge. Merged PRs get their worktree removed, the ticket moved to the project's done status, and a comment on the ticket.
-7. **Messaging.** Settings → *Accounts*: paste the Setmore `client_id` from the auth team and press **Log in** (browser sign-in; tokens stay on this Mac). In each project's *Messaging* step pick the platform (Setmore collab, or an agent run with your own MCP connectors), load and pick the channel, and edit the four templates. HandsFree then posts "please review" when CI passes on a published PR and "waiting to be merged" when an approved PR sits past the project's delay — once each. **Send to collab** on a PR (or a selection of PRs) sends the prefilled, editable text; every send is listed in the ticket detail.
+7. **Messaging.** Collab messages go through the Claude agent: HandsFree runs `claude -p …` with only the Setmore connector's `send_message` and `list_channels` tools allowed, and Claude's own Setmore connector posts the message as you. It needs Claude Code's Setmore connector signed in (HandsFree has no Setmore login of its own; Settings → *System check* shows whether `claude` is on PATH). Projects saved with the old Setmore-direct platform open as *Agent* with the same channel and templates. In each project's *Messaging* step pick *Agent (Claude + Setmore MCP connector)*, load and pick the channel, and edit the four templates. HandsFree then posts "please review" when CI passes on a published PR and "waiting to be merged" when an approved PR sits past the project's delay — once each. **Send to collab** on a PR (or a selection of PRs) sends the prefilled, editable text; every send is listed in the ticket detail.
 
 Agents are told to commit but not push. HandsFree commits anything left uncommitted, pushes the ticket's branch, opens the PR with `gh`, and comments the link on the ticket. The only status change HandsFree makes is the move to the done status on merge.
 
@@ -133,6 +131,5 @@ Agents also get `HANDSFREE=1`, `HANDSFREE_ISSUE=<KEY>` and `CI=1` in their envir
 - Engine log: `~/Library/Logs/HandsFree/engine.log`
 - Routine logs: `~/Library/Application Support/HandsFree/logs/routine-<id>.log`
 - Worktrees: `<repo>/.worktrees/<KEY>` (characters outside `A-Z a-z 0-9 . _ -` become `-`, so GitHub's `repo#12` lives in `repo-12`: a `#` in the path breaks Vite/esbuild builds). `.worktrees/` and `.handsfree/` are added to the repo's `.git/info/exclude`, so your checkout stays clean.
-- Setmore login: `~/Library/Application Support/HandsFree/auth/setmore.json` (mode 600; never sent anywhere but Setmore).
 
 The engine listens on `127.0.0.1` with a random port and a per-launch token. Only the app can talk to it.

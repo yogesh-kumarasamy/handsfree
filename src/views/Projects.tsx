@@ -654,8 +654,7 @@ function ProjectEditor({
               <label>Platform</label>
               <select className="select" style={{ maxWidth: 360 }} value={p.messaging.platform} onChange={(e) => setMsg({ platform: e.target.value as MessagingPlatform })}>
                 <option value="none">None — don't message</option>
-                <option value="setmore">Setmore collab (direct, signed in via Settings → Accounts)</option>
-                <option value="agent">Agent (any platform your MCP connectors reach)</option>
+                <option value="agent">Agent (Claude + Setmore MCP connector)</option>
               </select>
             </div>
             {p.messaging.platform !== "none" && (
@@ -664,7 +663,7 @@ function ProjectEditor({
                   <div className="field">
                     <label>Agent command</label>
                     <input className="input code" value={p.messaging.agentCommand} onChange={(e) => setMsg({ agentCommand: e.target.value })} />
-                    <span className="hint"><span className="mono">{"{prompt}"}</span> is filled in. The agent must have the platform's send_message tool; the default uses Claude with the Setmore connector.</span>
+                    <span className="hint"><span className="mono">{"{prompt}"}</span> is filled in. The default runs Claude with its Setmore connector (sign in to the connector in Claude Code first).</span>
                   </div>
                 )}
                 <div className="field">
@@ -737,7 +736,7 @@ function ProjectEditor({
               </dd>
               <dt>Pull requests</dt><dd>{p.draftPr ? "Draft" : "Ready for review"}, PR link commented on the {TRACKER_NOUN[p.tracker.kind]}{p.tracker.commentCommand.trim() === "-" ? " (commenting off)" : ""}</dd>
               <dt>Messaging</dt>
-              <dd>{p.messaging.platform === "none" ? "off" : `${p.messaging.platform === "setmore" ? "Setmore collab" : "agent"} → ${p.messaging.channelName || p.messaging.channelId || "no channel"}`}</dd>
+              <dd>{p.messaging.platform === "none" ? "off" : `agent → ${p.messaging.channelName || p.messaging.channelId || "no channel"}`}</dd>
               <dt>Routines</dt>
               <dd>{p.routines.length === 0 ? "none" : p.routines.map((r) => `${r.name}${r.enabled ? "" : " (off)"} · ${cronText(r.schedule)}`).join(" · ")}</dd>
               <dt>After the PR</dt>

@@ -1,18 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { MessagingService } from "../dist/test/messaging/service.js";
-import { TokenStore } from "../dist/test/messaging/oauth.js";
 
 const templates = { reviewReady: "review {key} {pr_url}", mergeNudge: "nudge {key} {approved_ago}", manual: "{key} — {summary}: {pr_url}", bulk: "Eyes please:\n{list}" };
 const proj = (id, platform, channelId = "ch-" + id) => ({ id, name: "P" + id, repoPath: "", messaging: { platform, channelId, channelName: "#" + id, templates, agentCommand: "" } });
 const tick = (key, projectId) => ({ key, projectId, summary: "S " + key, branch: "b", prUrl: "https://x/" + key, attempts: [], status: "pr_ready", createdAt: "", updatedAt: "" });
 
 function makeService(sent) {
-  const config = { settings: { accounts: { setmore: { clientId: "c", redirectPort: 1, mcpUrl: "http://127.0.0.1:1/mcp", issuer: "http://127.0.0.1:1/o", scopes: "" } } }, projects: [proj("a", "agent"), proj("b", "agent"), proj("c", "none")] };
-  const state = { tickets: { "A-1": tick("A-1", "a"), "A-2": tick("A-2", "a"), "B-1": tick("B-1", "b"), "C-1": tick("C-1", "c") }, accounts: { setmore: { loggedIn: false } } };
+  const config = { settings: { accounts: {} }, projects: [proj("a", "agent"), proj("b", "agent"), proj("c", "none")] };
+  const state = { tickets: { "A-1": tick("A-1", "a"), "A-2": tick("A-2", "a"), "B-1": tick("B-1", "b"), "C-1": tick("C-1", "c") }, accounts: {} };
   const logs = [];
   const notices = [];
   const svc = new MessagingService({
@@ -22,7 +18,6 @@ function makeService(sent) {
     notify: (t, b) => notices.push([t, b]),
     persist: () => {},
     emit: () => {},
-    tokens: new TokenStore(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "hf-svc-")), "t.json")),
     // test seam: replace the real adapter factory
     adapterFor: (p) =>
       p.messaging.platform === "none"

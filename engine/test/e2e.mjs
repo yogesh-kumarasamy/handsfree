@@ -3,7 +3,6 @@
 // Expect: fallback, push to a bare remote, draft PR, Jira comment, then cleanup after "merge".
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
-import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
@@ -57,7 +56,35 @@ script("fakeopen", `cp "$1" "${root}/opened.command"`);
 // a non-Claude agent that prints its session id and keeps working (for watch / take over)
 script("fakeslow", `echo "SESSION: abc-12345678"; echo "thinking…"; sleep 60`);
 // messaging agent fake: prints Claude's JSON envelope and records the prompt
-script("fakemsg", `echo "$@" >> "${root}/msg.log"; echo '{"type":"result","is_error":false,"result":"ok\\n{\\"sent\\": true, \\"id\\": \\"agent-1\\"}"}'`);
+// messaging agent fake (stands in for Claude + its Setmore connector): records the prompt, decodes each send
+// into msg.jsonl, answers list_channels with two channels, and prints Claude's JSON envelope
+fs.writeFileSync(
+  path.join(root, "fakemsg.mjs"),
+  `import fs from "node:fs";
+const prompt = process.argv[2] || "";
+fs.appendFileSync(${JSON.stringify(path.join(root, "msg.log"))}, prompt + "\\n");
+let result;
+if (/list_channels/.test(prompt)) {
+  result = JSON.stringify([{ id: "ch-core", name: "ChatSupport Team Core" }, { id: "ch-other", name: "Other" }]);
+} else {
+  const channelId = JSON.parse(prompt.match(/channel with id ("(?:[^"\\\\]|\\\\.)*")/)[1]);
+  const idempotencyKey = JSON.parse(prompt.match(/idempotencyKey ("(?:[^"\\\\]|\\\\.)*")\\)/)[1]);
+  const text = JSON.parse(prompt.split("\\n").find((l) => l.startsWith("text = ")).slice(7));
+  fs.appendFileSync(${JSON.stringify(path.join(root, "msg.jsonl"))}, JSON.stringify({ channelId, text, idempotencyKey }) + "\\n");
+  result = "ok\\n" + JSON.stringify({ sent: true, id: "agent-1" });
+}
+console.log(JSON.stringify({ type: "result", is_error: false, result }));
+`,
+);
+script("fakemsg", `exec "${process.execPath}" "${root}/fakemsg.mjs" "$@"`);
+/** Messages the fake messaging agent sent, oldest first. */
+const received = () => {
+  try {
+    return fs.readFileSync(path.join(root, "msg.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  } catch {
+    return [];
+  }
+};
 // routine agent fake: records its prompt, optionally slow, prints Claude's JSON envelope with a known report
 script("fakeroutine", `echo "$@" >> "${root}/routine.log"; if [ -f "${root}/ROUTINE_SLOW" ]; then sleep 3; fi; echo '{"type":"result","is_error":false,"result":"Open PRs: 2 — 1 awaiting review, 1 draft"}'`);
 // a Claude-style agent with stream-json input: the prompt is the first stdin line, later lines are your messages
@@ -101,10 +128,6 @@ const project = {
 };
 fs.writeFileSync(path.join(data, "config.json"), JSON.stringify({ version: 1, settings: { pollIntervalMin: 60, prPollIntervalMin: 60, maxParallel: 1, agentTimeoutMin: 5, paused: false, notifications: true, launchAtLogin: false }, projects: [project] }));
 
-// Fake Setmore: an OAuth server and an MCP server, in this process; the engine reaches them through its settings.
-const validTokens = new Set();
-const auth = await startFakeAuth({ validTokens });
-const mcp = await startFakeMcp({ validTokens });
 // Fake Linear: an OAuth server that only accepts dynamically registered clients, and an MCP server with Linear-like tools.
 const linTokens = new Set();
 const linAuth = await startFakeAuth({ validTokens: linTokens, requireRegistered: true });
@@ -233,7 +256,7 @@ try {
   assert.match(fs.readFileSync(path.join(root, "ready.log"), "utf8"), /pull\/101/);
   assert.equal((await ticket("DEMO-1")).status, "pr_ready");
 
-  // ---- Messaging: configure Setmore + log in through the fake auth server
+  // ---- Messaging: an old Setmore-direct project (and its account settings) opens as an agent project, same channel
   const cfgM = await api("/api/config");
   project.messaging = {
     platform: "setmore",
@@ -242,45 +265,19 @@ try {
     templates: { reviewReady: "Hey team, please review {key} — {summary}: {pr_url}", mergeNudge: "Hi team, {key} is approved and waiting {approved_ago}: {pr_url}", manual: "{key}: {pr_url}", bulk: "Eyes please:\n{list}" },
     agentCommand: "",
   };
-  await api("/api/config", "PUT", { ...cfgM, settings: { ...cfgM.settings, accounts: { setmore: { clientId: "hf-test", redirectPort: cbPort, mcpUrl: mcp.url, issuer: auth.issuer, scopes: "openid offline_access" } } }, projects: [project] });
-  assert.equal((await api("/api/accounts/setmore")).loggedIn, false);
-  // a send without a login is recorded as failed and reported, never thrown away
-  const noLogin = await api("/api/tickets/DEMO-1/message", "POST", { text: "early" });
-  assert.match(noLogin.error, /Not logged in/);
-  assert.equal((await ticket("DEMO-1")).messages.at(-1).ok, false);
-
-  const login = await api("/api/accounts/setmore/login", "POST", {});
-  assert.match(login.url, new RegExp(`^${auth.issuer}/oauth2/auth\\?`));
-  assert.equal((await api("/api/accounts/setmore")).loginPending, true);
-  // a second click returns the same URL
-  assert.equal((await api("/api/accounts/setmore/login", "POST", {})).url, login.url);
-  const authorize = await fetch(login.url, { redirect: "manual" });
-  const callback = authorize.headers.get("location");
-  assert.match(callback, new RegExp(`^http://127\\.0\\.0\\.1:${cbPort}/oauth/callback\\?code=`));
-  // wrong state is rejected and the login stays pending
-  const bad = await fetch(callback.replace(/state=[^&]*/, "state=forged"));
-  assert.equal(bad.status, 400);
-  assert.equal((await api("/api/accounts/setmore")).loginPending, true);
-  const done = await fetch(callback);
-  assert.equal(done.status, 200);
-  assert.match(await done.text(), /Signed in/);
-  const acct = await waitFor(async () => {
-    const a = await api("/api/accounts/setmore");
-    return a.loggedIn && !a.loginPending && a;
-  }, "setmore logged in");
-  assert.equal(acct.user, "t@t.t");
-  assert.equal(auth.tokenCalls[0].resource, mcp.url, "resource indicator sent");
-
-  // port in use → clear error, not a hang
-  await api("/api/accounts/setmore/logout", "POST");
-  const blocker = http.createServer(() => {});
-  await new Promise((r) => blocker.listen(cbPort, "127.0.0.1", r));
-  assert.match((await api("/api/accounts/setmore/login", "POST", {})).error, new RegExp(`Port ${cbPort} is in use`));
-  await new Promise((r) => blocker.close(r));
-  // log in again for the rest of the run
-  const login2 = await api("/api/accounts/setmore/login", "POST", {});
-  await fetch((await fetch(login2.url, { redirect: "manual" })).headers.get("location"));
-  await waitFor(async () => (await api("/api/accounts/setmore")).loggedIn, "logged in again");
+  await api("/api/config", "PUT", { ...cfgM, settings: { ...cfgM.settings, accounts: { ...cfgM.settings.accounts, setmore: { clientId: "hf-test", scopes: "openid" } } }, projects: [project] });
+  const migrated = (await api("/api/config")).projects[0].messaging;
+  assert.equal(migrated.platform, "agent");
+  assert.equal(migrated.channelId, "ch-core");
+  assert.equal(migrated.channelName, "ChatSupport Team Core");
+  assert.match(migrated.agentCommand, /^claude -p \{prompt\}/);
+  assert.equal((await api("/api/config")).settings.accounts.setmore, undefined, "accounts.setmore dropped on save");
+  assert.equal((await api("/api/accounts/setmore")).error, "not found", "no Setmore account route");
+  // the fake agent stands in for claude from here on
+  project.messaging = { ...migrated, agentCommand: "fakemsg {prompt}" };
+  await api("/api/config", "PUT", { ...(await api("/api/config")), projects: [project] });
+  const ch = await api("/api/messaging/channels", "POST", { project });
+  assert.deepEqual(ch.channels.map((c) => c.id), ["ch-core", "ch-other"], ch.error);
 
   // ---- Routines: Run now posts the agent's report to the channel; test-only tick runs a due routine; no overlap
   const REPORT = "Open PRs: 2 — 1 awaiting review, 1 draft";
@@ -289,7 +286,7 @@ try {
   await api("/api/config", "PUT", { ...(await api("/api/config")), projects: [project] });
   const rtNext = (await api("/api/state")).routines.rt1.nextRunAt;
   assert.ok(rtNext, "routine scheduled");
-  const sentBefore = mcp.received.length;
+  const sentBefore = received().length;
   assert.deepEqual(await api("/api/routines/rt1/run", "POST", {}), {});
   const rtLast = await waitFor(async () => {
     const st = (await api("/api/state")).routines.rt1;
@@ -298,17 +295,17 @@ try {
   assert.equal(rtLast.ok, true, rtLast.output);
   assert.equal(rtLast.output, REPORT);
   assert.equal(rtLast.posted, true, rtLast.postError);
-  assert.equal(mcp.received.length, sentBefore + 1);
-  assert.equal(mcp.received.at(-1).text, REPORT);
-  assert.equal(mcp.received.at(-1).channelId, "ch-core");
-  assert.equal(mcp.received.at(-1).idempotencyKey, `routine:rt1:${rtLast.startedAt}`);
+  assert.equal(received().length, sentBefore + 1);
+  assert.equal(received().at(-1).text, REPORT);
+  assert.equal(received().at(-1).channelId, "ch-core");
+  assert.equal(received().at(-1).idempotencyKey, `routine:rt1:${rtLast.startedAt}`);
   const rtPrompts = () => fs.readFileSync(path.join(root, "routine.log"), "utf8").trim().split("\n");
   assert.match(rtPrompts()[0], /^Report Demo .+ the beginning$/);
   assert.match((await api("/api/routines/rt1/log")).log, /✓ PR check finished/);
   assert.match((await api("/api/routines/nope/run", "POST", {})).error, /Unknown routine/);
   // the scheduled slot comes due: the test-only tick at that instant runs it once
   assert.deepEqual(await api("/api/routines/tick", "POST", { now: rtNext }), {});
-  await waitFor(async () => mcp.received.length === sentBefore + 2, "scheduled routine posted");
+  await waitFor(async () => received().length === sentBefore + 2, "scheduled routine posted");
   assert.equal(rtPrompts().length, 2);
   assert.doesNotMatch(rtPrompts()[1], /the beginning/, "{last_run} is the previous successful run");
   const rtAfter = (await api("/api/state")).routines.rt1;
@@ -317,7 +314,7 @@ try {
   fs.writeFileSync(path.join(root, "ROUTINE_SLOW"), "");
   assert.deepEqual(await api("/api/routines/rt1/run", "POST", {}), {});
   assert.match((await api("/api/routines/rt1/run", "POST", {})).error, /already running/);
-  await waitFor(async () => mcp.received.length === sentBefore + 3, "slow routine posted");
+  await waitFor(async () => received().length === sentBefore + 3, "slow routine posted");
   fs.rmSync(path.join(root, "ROUTINE_SLOW"));
   await waitFor(async () => !(await api("/api/state")).routines.rt1.running, "slow routine finished");
 
@@ -466,7 +463,7 @@ try {
   await checkPrs();
   await sleep(800);
   assert.equal(((await api("/api/tickets/DEMO-1/log")).log.match(/🔔 Ready for review/g) || []).length, 1, "review_ready fired once");
-  const reviewMsg = await waitFor(async () => mcp.received.find((m) => /please review DEMO-1/.test(m.text)), "review message sent");
+  const reviewMsg = await waitFor(async () => received().find((m) => /please review DEMO-1/.test(m.text)), "review message sent");
   assert.equal(reviewMsg.channelId, "ch-core");
   assert.match(reviewMsg.text, /pull\/101/);
   assert.equal((await ticket("DEMO-1")).messages.at(-1).kind, "review_ready");
@@ -482,33 +479,24 @@ try {
   await checkPrs();
   await sleep(800);
   assert.equal(((await api("/api/tickets/DEMO-1/log")).log.match(/🔔 Waiting to be merged/g) || []).length, 1, "nudge fired once");
-  await waitFor(async () => mcp.received.find((m) => /approved and waiting/.test(m.text)), "nudge message sent");
-  assert.equal(mcp.received.filter((m) => /DEMO-1/.test(m.text)).length, 2, "one review + one nudge message");
+  await waitFor(async () => received().find((m) => /approved and waiting/.test(m.text)), "nudge message sent");
+  assert.equal(received().filter((m) => /DEMO-1/.test(m.text)).length, 2, "one review + one nudge message");
 
-  // ---- Manual, bulk, 401→refresh, logout, agent adapter
+  // ---- Manual and bulk sends go through the agent too, and are recorded on the ticket
   const manual = await api("/api/tickets/DEMO-1/message", "POST", { text: "custom hello" });
   assert.equal(manual.ok, true);
-  assert.equal(mcp.received.at(-1).text, "custom hello");
+  assert.equal(manual.id, "agent-1");
+  assert.equal(manual.platform, "agent");
+  assert.equal(received().at(-1).text, "custom hello");
+  assert.equal((await ticket("DEMO-1")).messages.at(-1).text, "custom hello");
+  assert.match(fs.readFileSync(path.join(root, "msg.log"), "utf8"), /custom hello[\s\S]*confirmationToken/);
   const bulk = await api("/api/messages/bulk", "POST", { keys: ["DEMO-1", "DEMO-2"] });
   assert.equal(bulk.failed.length, 0);
   assert.equal(bulk.sent.length, 2);
-  assert.match(mcp.received.at(-1).text, /^Eyes please:\n- DEMO-1 — Add greeting: .*pull\/101\n- DEMO-2 — Second ticket: .*pull\/102$/);
-  auth.rotate();
-  const afterRotate = await api("/api/tickets/DEMO-1/message", "POST", {});
-  assert.equal(afterRotate.ok, true, "401 → refresh → sent");
-  assert.equal(afterRotate.text, "DEMO-1: https://github.com/acme/repo/pull/101");
-  await api("/api/accounts/setmore/logout", "POST");
-  assert.equal((await api("/api/accounts/setmore")).loggedIn, false);
-  assert.match((await api("/api/tickets/DEMO-1/message", "POST", {})).error, /Not logged in/);
-  // agent adapter
-  project.messaging = { ...project.messaging, platform: "agent", agentCommand: "fakemsg {prompt}" };
-  await api("/api/config", "PUT", { ...(await api("/api/config")), projects: [project] });
-  const viaAgent = await api("/api/tickets/DEMO-1/message", "POST", { text: "via agent" });
-  assert.equal(viaAgent.ok, true);
-  assert.equal(viaAgent.id, "agent-1");
-  assert.match(fs.readFileSync(path.join(root, "msg.log"), "utf8"), /via agent[\s\S]*confirmationToken/);
-  project.messaging = { ...project.messaging, platform: "setmore" };
-  await api("/api/config", "PUT", { ...(await api("/api/config")), projects: [project] });
+  assert.match(received().at(-1).text, /^Eyes please:\n- DEMO-1 — Add greeting: .*pull\/101\n- DEMO-2 — Second ticket: .*pull\/102$/);
+  const templated = await api("/api/tickets/DEMO-1/message", "POST", {});
+  assert.equal(templated.ok, true);
+  assert.equal(templated.text, "DEMO-1: https://github.com/acme/repo/pull/101");
 
   prJson(101, { state: "MERGED", isDraft: false, headRefOid: "ddd444", mergedAt: "2026-10-15T10:00:00Z" });
   await checkPrs();
@@ -739,8 +727,6 @@ try {
   }
   process.exitCode = 1;
 } finally {
-  await auth.close();
-  await mcp.close();
   await linAuth.close();
   await linMcp.close();
   engine.kill("SIGTERM");

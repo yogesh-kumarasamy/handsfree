@@ -31,7 +31,7 @@ function harness({ projects, runner, now = () => new Date("2026-10-15T10:00:30")
   return { svc, config, state, posts, logs, notices };
 }
 const routine = (o) => ({ id: "r1", name: "R", enabled: true, schedule: "0 10 * * *", prompt: "Report for {project} ({repo}) since {last_run}", agentCommand: "fake {prompt}", postToChannel: true, timeoutMin: 1, ...o });
-const project = (routines, messaging = { platform: "setmore", channelId: "c", channelName: "#c" }) => ({ id: "p1", name: "P", repoPath: "/tmp/x", remote: "origin", messaging: { templates: {}, agentCommand: "", ...messaging }, routines });
+const project = (routines, messaging = { platform: "agent", channelId: "c", channelName: "#c" }) => ({ id: "p1", name: "P", repoPath: "/tmp/x", remote: "origin", messaging: { templates: {}, agentCommand: "", ...messaging }, routines });
 
 test("start computes nextRunAt; tick runs a due routine, records output, posts with the routine kind and key", async () => {
   let cmd = "";

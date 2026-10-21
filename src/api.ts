@@ -46,10 +46,6 @@ export interface Api {
   sendBulk(keys: string[], text?: string): Promise<{ sent: MessageRecord[]; failed: { key: string; error: string }[] }>;
   testMessage(project: ProjectConfig): Promise<{ ok: boolean; error?: string }>;
   listChannels(project: ProjectConfig, query?: string): Promise<{ channels: { id: string; name: string }[]; error?: string }>;
-  setmoreStatus(): Promise<AccountStatus>;
-  /** Starts the loopback OAuth flow; open the returned URL in the browser. */
-  setmoreLogin(): Promise<{ url: string }>;
-  setmoreLogout(): Promise<void>;
   linearStatus(): Promise<AccountStatus>;
   /** Starts the Linear login (registers HandsFree with Linear the first time); open the URL in the browser. */
   linearLogin(): Promise<{ url: string }>;
@@ -125,9 +121,6 @@ function createHttpApi(base: string, token: string): Api {
     sendBulk: (keys, text) => call("/api/messages/bulk", "POST", { keys, text }),
     testMessage: (project) => call("/api/messaging/test", "POST", { project }),
     listChannels: (project, query) => call("/api/messaging/channels", "POST", { project, query }),
-    setmoreStatus: () => call("/api/accounts/setmore"),
-    setmoreLogin: () => action("/api/accounts/setmore/login", {}),
-    setmoreLogout: () => call("/api/accounts/setmore/logout", "POST"),
     linearStatus: () => call("/api/accounts/linear"),
     linearLogin: () => action("/api/accounts/linear/login", {}),
     linearLogout: () => call("/api/accounts/linear/logout", "POST"),

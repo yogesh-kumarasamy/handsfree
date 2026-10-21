@@ -1,10 +1,7 @@
-// Sends collab messages for PR events and on demand; owns the Setmore login (loopback OAuth) and records every send.
-import type { AccountStatus, Config, EngineEvent, EngineState, MessageKind, MessageRecord, PrEvent, ProjectConfig, Ticket } from "../types";
+// Sends collab messages for PR events and on demand (through the agent adapter) and records every send.
+import type { Config, EngineEvent, EngineState, MessageKind, MessageRecord, PrEvent, ProjectConfig, Ticket } from "../types";
 import type { MessagingAdapter } from "./adapter";
-import { adapterFor as realAdapterFor, type AdapterDeps } from "./index";
-import { LoopbackLogin } from "../oauthlogin";
-import type { TokenStore } from "./oauth";
-import { SetmoreAdapter } from "./setmore";
+import { adapterFor as realAdapterFor } from "./index";
 import { bulkList, fillTemplate, ticketVars } from "./templates";
 
 export interface ServiceDeps {
@@ -14,74 +11,18 @@ export interface ServiceDeps {
   notify: (title: string, body: string) => void;
   persist: () => void;
   emit: (e: EngineEvent) => void;
-  tokens: TokenStore;
-  fetchImpl?: typeof fetch;
   /** Test seam. */
-  adapterFor?: (p: ProjectConfig, settings: Config["settings"], deps: AdapterDeps) => MessagingAdapter | undefined;
+  adapterFor?: (p: ProjectConfig) => MessagingAdapter | undefined;
 }
 
 const now = () => new Date().toISOString();
 
 export class MessagingService {
-  private adapterDeps: AdapterDeps;
-  private login: LoopbackLogin;
-
-  constructor(public deps: ServiceDeps) {
-    this.adapterDeps = { tokens: deps.tokens, fetchImpl: deps.fetchImpl, onStatus: (s) => this.setStatus(s) };
-    const cfg = () => this.deps.config().settings.accounts.setmore;
-    this.login = new LoopbackLogin({
-      name: "setmore",
-      issuer: () => cfg().issuer,
-      resource: () => cfg().mcpUrl,
-      scopes: () => cfg().scopes,
-      redirectPort: () => cfg().redirectPort,
-      clientId: async () => {
-        if (!cfg().clientId.trim()) throw new Error("Enter the Setmore client id first (from the auth team).");
-        return { clientId: cfg().clientId };
-      },
-      tokens: deps.tokens,
-      onStatus: (s) => this.setStatus(s),
-      status: (e) => this.setmore().status(e),
-      fetchImpl: deps.fetchImpl,
-    });
-  }
-
-  // ---------- status ----------
-  private accountKey() {
-    return JSON.stringify(this.deps.config().settings.accounts.setmore);
-  }
-  private setmore(): SetmoreAdapter {
-    if (!this.adapterDeps.setmore) {
-      this.adapterDeps.setmore = new SetmoreAdapter(this.deps.config().settings.accounts.setmore, this.deps.tokens, this.adapterDeps.onStatus, this.deps.fetchImpl);
-      this.lastAccountKey = this.accountKey();
-    }
-    return this.adapterDeps.setmore;
-  }
-  status(): AccountStatus {
-    return { ...this.setmore().status(), loginPending: this.login.pending };
-  }
-  private setStatus(s: AccountStatus) {
-    const status = { ...s, loginPending: this.login.pending };
-    this.deps.state().accounts.setmore = status;
-    this.deps.persist();
-    this.deps.emit({ type: "account", name: "setmore", status });
-  }
-  /** Called once at engine start to reflect the token file. */
-  init() {
-    this.setStatus(this.setmore().status());
-  }
-  private lastAccountKey?: string;
-  /**
-   * Config saved. Only when the account settings (client id, URLs) differ from the ones the cached adapter was
-   * built with is it dropped — an unrelated save must not interrupt an in-flight token refresh.
-   */
-  settingsChanged() {
-    if (this.adapterDeps.setmore && this.accountKey() !== this.lastAccountKey) this.adapterDeps.setmore = undefined;
-  }
+  constructor(public deps: ServiceDeps) {}
 
   // ---------- resolving ----------
   private adapter(p: ProjectConfig) {
-    return (this.deps.adapterFor || realAdapterFor)(p, this.deps.config().settings, this.adapterDeps);
+    return (this.deps.adapterFor || realAdapterFor)(p);
   }
   private resolve(t: Ticket): { p: ProjectConfig; adapter: MessagingAdapter } {
     const p = this.deps.config().projects.find((x) => x.id === t.projectId);
@@ -211,19 +152,6 @@ export class MessagingService {
     const adapter = this.adapter(p);
     if (!adapter) throw new Error("Pick a platform first.");
     return adapter.listChannels(query);
-  }
-
-  // ---------- Setmore login ----------
-  loginUrl(): Promise<string> {
-    return this.login.loginUrl();
-  }
-
-  async logout() {
-    await this.login.logout();
-  }
-
-  shutdown() {
-    this.login.shutdown();
   }
 
   /** Post free text to a project's channel without a ticket (routines). Throws on failure. */

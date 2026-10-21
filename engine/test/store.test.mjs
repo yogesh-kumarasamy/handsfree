@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { migrateState, normalizeProject, normalizeRoutine, normalizeSettings, withRequiredScope } from "../dist/test/store.js";
+import { migrateState, normalizeProject, normalizeRoutine, normalizeSettings } from "../dist/test/store.js";
+import { DEFAULT_AGENT_MESSAGE_COMMAND, DEFAULT_TEMPLATES } from "../dist/test/types.js";
 
 const cfg = (draftPr) => ({ version: 1, settings: {}, projects: [{ id: "p1", draftPr }] });
 const ticket = (status, projectId = "p1") => ({ key: "X-1", projectId, status, branch: "", worktree: "", agentIndex: 0, attempts: [], createdAt: "", updatedAt: "" });
@@ -117,13 +118,33 @@ test("normalizeProject: a customised Claude command is left alone", () => {
   assert.equal(p.agents[0].command, custom);
 });
 
-test("saved Setmore scopes without the server's required scope get it appended; present ones are kept as-is", () => {
-  const required = "setmore.apis-internal.fullaccess";
-  assert.equal(withRequiredScope("openid offline_access awapis.streams.read", required), `openid offline_access awapis.streams.read ${required}`);
-  assert.equal(withRequiredScope(` openid  ${required} awapis.users.read `, required), `openid ${required} awapis.users.read`);
-  assert.equal(withRequiredScope(undefined, required), required);
-  const s = normalizeSettings({ accounts: { setmore: { clientId: "cid", scopes: "openid offline_access awapis.chat.streams.push" } } });
-  assert.equal(s.accounts.setmore.scopes, `openid offline_access awapis.chat.streams.push ${required}`);
-  assert.equal(s.accounts.setmore.clientId, "cid");
-  assert.match(normalizeSettings(undefined).accounts.setmore.scopes, /\bsetmore\.apis-internal\.fullaccess\b/);
+test("normalizeProject: a Setmore-direct project becomes an agent project with the default command; channel and templates kept", () => {
+  const p = normalizeProject({
+    id: "p1",
+    messaging: { platform: "setmore", channelId: "nN0p", channelName: "ChatSupport Team Core", templates: { reviewReady: "eyes on {pr_url}" }, agentCommand: "old {prompt}" },
+  });
+  assert.equal(p.messaging.platform, "agent");
+  assert.equal(p.messaging.agentCommand, DEFAULT_AGENT_MESSAGE_COMMAND);
+  assert.equal(p.messaging.channelId, "nN0p");
+  assert.equal(p.messaging.channelName, "ChatSupport Team Core");
+  assert.equal(p.messaging.templates.reviewReady, "eyes on {pr_url}");
+  assert.equal(p.messaging.templates.bulk, DEFAULT_TEMPLATES.bulk);
+  // Agent projects keep their own command; unknown platforms are off.
+  assert.equal(normalizeProject({ messaging: { platform: "agent", agentCommand: "my {prompt}" } }).messaging.agentCommand, "my {prompt}");
+  assert.equal(normalizeProject({ messaging: { platform: "slack" } }).messaging.platform, "none");
+});
+
+test("settings: an old accounts.setmore block loads and is dropped; settings without it load", () => {
+  const old = normalizeSettings({ pollIntervalMin: 7, accounts: { setmore: { clientId: "cid", scopes: "openid" }, linear: { redirectPort: 50000 } } });
+  assert.equal(old.pollIntervalMin, 7);
+  assert.deepEqual(Object.keys(old.accounts), ["linear"]);
+  assert.equal(old.accounts.linear.redirectPort, 50000);
+  const fresh = normalizeSettings({ accounts: { linear: {} } });
+  assert.deepEqual(Object.keys(fresh.accounts), ["linear"]);
+  assert.equal(normalizeSettings(undefined).accounts.setmore, undefined);
+});
+
+test("migrateState: an old accounts.setmore status is dropped", () => {
+  const s = migrateState({ tickets: {}, accounts: { setmore: { loggedIn: true }, linear: { loggedIn: true } } }, { version: 1, settings: {}, projects: [] });
+  assert.deepEqual(s.accounts, { linear: { loggedIn: true } });
 });

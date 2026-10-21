@@ -48,7 +48,7 @@ export class Orchestrator {
   private stateTimer?: NodeJS.Timeout;
   /** Once-per-PR lifecycle events. Default subscriber: notification + log. Messaging (roadmap item 3) subscribes here too. */
   prEvents = new PrEvents();
-  /** Collab messages (Setmore direct or agent-driven); subscribes to prEvents in start(). */
+  /** Collab messages sent by the agent (Claude + Setmore connector); subscribes to prEvents in start(). */
   messaging = new MessagingService({
     config: () => this.config,
     state: () => this.state,
@@ -56,7 +56,6 @@ export class Orchestrator {
     notify: (t, b) => this.notify(t, b, "failed"),
     persist: () => this.persist(),
     emit: (e) => this.emit(e),
-    tokens: new TokenStore(path.join(DATA_DIR, "auth", "setmore.json")),
   });
   /** Scheduled agent runs per project (roadmap item 5); logs go to LOG_DIR/routine-<id>.log, not a ticket log. */
   routines = new RoutineService({
@@ -92,7 +91,6 @@ export class Orchestrator {
     this.persist();
     this.prEvents.on((e) => this.onPrEvent(e));
     this.prEvents.on((e) => void this.messaging.onPrEvent(e));
-    this.messaging.init();
     this.routines.start();
     this.trackers.init();
     this.schedulePoll(3000);
@@ -159,8 +157,6 @@ export class Orchestrator {
       settings: normalizeSettings({ ...this.config.settings, ...next.settings }),
       projects: (next.projects || []).map(normalizeProject),
     };
-    // Account settings (client id, URLs) may have changed: the next messaging call builds a fresh adapter.
-    this.messaging.settingsChanged();
     this.routines.configChanged();
     this.trackers.settingsChanged();
     saveConfig(this.config);
@@ -901,7 +897,6 @@ export class Orchestrator {
     this.persist();
   }
   shutdown() {
-    this.messaging.shutdown();
     this.routines.shutdown();
     this.trackers.shutdown();
     clearTimeout(this.prTimer);

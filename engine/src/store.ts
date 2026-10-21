@@ -11,8 +11,6 @@ import {
   DEFAULT_AGENT_MESSAGE_COMMAND,
   DEFAULT_DONE_STATUS,
   DEFAULT_LINEAR_ACCOUNT,
-  DEFAULT_SETMORE_ACCOUNT,
-  SETMORE_REQUIRED_SCOPE,
   DEFAULT_TEMPLATES,
   type Config,
   type EngineState,
@@ -45,36 +43,27 @@ export const DEFAULT_SETTINGS: Settings = {
   paused: false,
   notifications: true,
   launchAtLogin: false,
-  accounts: { setmore: { ...DEFAULT_SETMORE_ACCOUNT }, linear: { ...DEFAULT_LINEAR_ACCOUNT } },
+  accounts: { linear: { ...DEFAULT_LINEAR_ACCOUNT } },
 };
 
 export function normalizeSettings(raw: Partial<Settings> | undefined): Settings {
   const s = { ...DEFAULT_SETTINGS, ...(raw || {}) };
-  s.accounts = {
-    setmore: { ...DEFAULT_SETMORE_ACCOUNT, ...(raw?.accounts?.setmore || {}) },
-    linear: { ...DEFAULT_LINEAR_ACCOUNT, ...(raw?.accounts?.linear || {}) },
-  };
-  s.accounts.setmore.redirectPort = clamp(s.accounts.setmore.redirectPort, 1024, 65535, DEFAULT_SETMORE_ACCOUNT.redirectPort);
-  s.accounts.setmore.scopes = withRequiredScope(s.accounts.setmore.scopes, SETMORE_REQUIRED_SCOPE);
+  // Only known accounts are kept: an old Setmore account (direct sends, now done by the agent) is dropped on save.
+  s.accounts = { linear: { ...DEFAULT_LINEAR_ACCOUNT, ...(raw?.accounts?.linear || {}) } };
   s.accounts.linear.redirectPort = clamp(s.accounts.linear.redirectPort, 1024, 65535, DEFAULT_LINEAR_ACCOUNT.redirectPort);
   s.prPollIntervalMin = clamp(s.prPollIntervalMin, 1, 60, DEFAULT_SETTINGS.prPollIntervalMin);
   return s;
 }
 
-/** Scopes saved before the server's required scope was known get it appended; a login with those saved scopes would 403 on every tool call. */
-export function withRequiredScope(scopes: string | undefined, required: string): string {
-  const list = String(scopes || "").split(/\s+/).filter(Boolean);
-  return (list.includes(required) ? list : [...list, required]).join(" ");
-}
-
-export function normalizeMessaging(m: Partial<MessagingConfig> | undefined): MessagingConfig {
-  const platform = m?.platform === "setmore" || m?.platform === "agent" ? m.platform : "none";
+export function normalizeMessaging(m: (Omit<Partial<MessagingConfig>, "platform"> & { platform?: string }) | undefined): MessagingConfig {
+  // Setmore direct sends are gone: those projects now send through the agent (Claude's Setmore connector), same channel.
+  const legacySetmore = m?.platform === "setmore";
   return {
-    platform,
+    platform: legacySetmore || m?.platform === "agent" ? "agent" : "none",
     channelId: m?.channelId || "",
     channelName: m?.channelName || "",
     templates: { ...DEFAULT_TEMPLATES, ...(m?.templates || {}) },
-    agentCommand: m?.agentCommand ?? DEFAULT_AGENT_MESSAGE_COMMAND,
+    agentCommand: legacySetmore ? DEFAULT_AGENT_MESSAGE_COMMAND : (m?.agentCommand ?? DEFAULT_AGENT_MESSAGE_COMMAND),
   };
 }
 
@@ -202,7 +191,7 @@ export function migrateState(raw: Partial<EngineState> | undefined, cfg: Config)
     nextPollAt: raw?.nextPollAt,
     lastPrCheckAt: raw?.lastPrCheckAt,
     nextPrCheckAt: raw?.nextPrCheckAt,
-    accounts: { setmore: raw?.accounts?.setmore || { loggedIn: false }, linear: raw?.accounts?.linear || { loggedIn: false } },
+    accounts: { linear: raw?.accounts?.linear || { loggedIn: false } },
     routines: raw?.routines || {},
   };
 }
